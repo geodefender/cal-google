@@ -25,6 +25,9 @@ final class Cal_Google_Shortcode_Plugin
             'source' => '',
             'months' => 'all',
             'lang' => 'es',
+            'bg_color' => '#f7f7f7',
+            'border_color' => '#d9d9d9',
+            'text_color' => '#222222',
         ], $atts, self::SHORTCODE);
 
         $source = esc_url_raw(trim((string) $atts['source']));
@@ -34,13 +37,16 @@ final class Cal_Google_Shortcode_Plugin
 
         $monthsMode = $this->normalize_months_mode((string) $atts['months']);
         $lang = $this->normalize_language((string) $atts['lang']);
+        $bgColor = $this->normalize_color((string) $atts['bg_color'], '#f7f7f7');
+        $borderColor = $this->normalize_color((string) $atts['border_color'], '#d9d9d9');
+        $textColor = $this->normalize_color((string) $atts['text_color'], '#222222');
 
         $events = $this->get_events_from_source($source);
         if (is_wp_error($events)) {
             return '<p>' . esc_html($events->get_error_message()) . '</p>';
         }
 
-        return $this->render_year_accordion($events, $monthsMode, $lang);
+        return $this->render_year_accordion($events, $monthsMode, $lang, $bgColor, $borderColor, $textColor);
     }
 
     private function normalize_months_mode(string $monthsMode): string
@@ -53,6 +59,12 @@ final class Cal_Google_Shortcode_Plugin
     {
         $lang = strtolower(trim($lang));
         return in_array($lang, ['es', 'en'], true) ? $lang : 'es';
+    }
+
+    private function normalize_color(string $color, string $default): string
+    {
+        $normalized = sanitize_hex_color(trim($color));
+        return is_string($normalized) ? $normalized : $default;
     }
 
     /**
@@ -205,7 +217,7 @@ final class Cal_Google_Shortcode_Plugin
     /**
      * @param array<int,array<string,mixed>> $events
      */
-    private function render_year_accordion(array $events, string $monthsMode, string $lang): string
+    private function render_year_accordion(array $events, string $monthsMode, string $lang, string $bgColor, string $borderColor, string $textColor): string
     {
         $year = (int) wp_date('Y');
         $currentMonth = (int) wp_date('n');
@@ -238,13 +250,14 @@ final class Cal_Google_Shortcode_Plugin
         <div class="cal-google" id="<?php echo esc_attr($uid); ?>">
             <style>
                 #<?php echo esc_html($uid); ?> .cal-google-month { border: 1px solid #d9d9d9; border-radius: 8px; margin: 0 0 10px; overflow: hidden; }
-                #<?php echo esc_html($uid); ?> .cal-google-month > summary { cursor: pointer; padding: 12px 14px; background: #f7f7f7; font-weight: 600; }
+                #<?php echo esc_html($uid); ?> .cal-google-month { border-color: <?php echo esc_html($borderColor); ?>; }
+                #<?php echo esc_html($uid); ?> .cal-google-month > summary { cursor: pointer; padding: 12px 14px; background: <?php echo esc_html($bgColor); ?>; font-weight: 600; color: <?php echo esc_html($textColor); ?>; }
                 #<?php echo esc_html($uid); ?> .cal-google-month-content { padding: 10px 14px 14px; }
                 #<?php echo esc_html($uid); ?> .cal-google-event { padding: 10px 0; border-bottom: 1px solid #ececec; }
                 #<?php echo esc_html($uid); ?> .cal-google-event:last-child { border-bottom: 0; }
-                #<?php echo esc_html($uid); ?> .cal-google-event-title { font-weight: 600; margin-bottom: 4px; }
-                #<?php echo esc_html($uid); ?> .cal-google-event-meta { color: #555; font-size: 0.95em; }
-                #<?php echo esc_html($uid); ?> .cal-google-event-description { margin-top: 6px; white-space: pre-line; }
+                #<?php echo esc_html($uid); ?> .cal-google-event-title { font-weight: 600; margin-bottom: 4px; color: <?php echo esc_html($textColor); ?>; }
+                #<?php echo esc_html($uid); ?> .cal-google-event-meta { color: <?php echo esc_html($textColor); ?>; font-size: 0.95em; }
+                #<?php echo esc_html($uid); ?> .cal-google-event-description { margin-top: 6px; white-space: pre-line; color: <?php echo esc_html($textColor); ?>; }
                 #<?php echo esc_html($uid); ?> .cal-google-empty { color: #777; font-style: italic; }
             </style>
 
