@@ -14,10 +14,58 @@ final class Cal_Google_Shortcode_Plugin
 {
     private const SHORTCODE = 'cal-google';
     private const MAX_OCCURRENCES_PER_EVENT = 500;
+    private const ICS_QUERY_VAR = 'cal_google_ics';
+    private const EVENT_TRANSIENT_PREFIX = 'cal_google_event_';
 
     public function __construct()
     {
         add_shortcode(self::SHORTCODE, [$this, 'render_shortcode']);
+        add_filter('query_vars', [$this, 'register_query_vars']);
+        add_action('template_redirect', [$this, 'maybe_serve_event_ics']);
+    }
+
+    /**
+     * @param array<int,string> $vars
+     * @return array<int,string>
+     */
+    public function register_query_vars(array $vars): array
+    {
+        $vars[] = self::ICS_QUERY_VAR;
+        return $vars;
+    }
+
+    public function maybe_serve_event_ics(): void
+    {
+        $eventId = get_query_var(self::ICS_QUERY_VAR, '');
+        if (! is_string($eventId) || $eventId === '') {
+            return;
+        }
+
+        if (preg_match('/\A[a-f0-9]{40}\z/', $eventId) !== 1) {
+            status_header(400);
+            nocache_headers();
+            wp_die(esc_html__('Identificador de evento inválido.', 'cal-google'));
+        }
+
+        $event = get_transient(self::EVENT_TRANSIENT_PREFIX . $eventId);
+        if (! is_array($event)) {
+            status_header(404);
+            nocache_headers();
+            wp_die(esc_html__('El evento solicitado no está disponible.', 'cal-google'));
+        }
+
+        $ics = $this->build_single_event_ics($event);
+        if ($ics === '') {
+            status_header(404);
+            nocache_headers();
+            wp_die(esc_html__('No se pudo generar el archivo ICS.', 'cal-google'));
+        }
+
+        nocache_headers();
+        header('Content-Type: text/calendar; charset=utf-8');
+        header('Content-Disposition: attachment; filename="event-' . $eventId . '.ics"');
+        echo $ics; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+        exit;
     }
 
     public function render_shortcode($atts): string
@@ -451,6 +499,8 @@ final class Cal_Google_Shortcode_Plugin
             $when .= ' - ' . $this->format_event_datetime($end, $lang);
         }
         $eventUrl = esc_url((string) ($event['url'] ?? ''));
+        $googleTemplateUrl = esc_url($this->build_google_calendar_template_url($event));
+        $icsDownloadUrl = esc_url($this->build_event_ics_download_url($event));
         ?>
         <article class="cal-google-event">
             <div class="cal-google-event-title"><?php echo esc_html((string) $event['summary']); ?></div>
@@ -464,8 +514,154 @@ final class Cal_Google_Shortcode_Plugin
             <?php if ($eventUrl !== '') : ?>
                 <div class="cal-google-event-description"><a href="<?php echo $eventUrl; ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($translations['event_link']); ?></a></div>
             <?php endif; ?>
+            <?php if ($googleTemplateUrl !== '') : ?>
+                <div class="cal-google-event-description"><a href="<?php echo $googleTemplateUrl; ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($translations['google_template_link']); ?></a></div>
+            <?php endif; ?>
+            <?php if ($icsDownloadUrl !== '') : ?>
+                <div class="cal-google-event-description"><a href="<?php echo $icsDownloadUrl; ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($translations['download_ics']); ?></a></div>
+            <?php endif; ?>
         </article>
         <?php
+    }
+
+    /**
+     * @param array<string,mixed> $event
+     */
+    private function build_google_calendar_template_url(array $event): string
+    {
+        if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
+            return '';
+        }
+
+        /** @var DateTimeImmutable $start */
+        $start = $event['start'];
+        $end = $event['end'] ?? null;
+        if (! ($end instanceof DateTimeImmutable) || $end <= $start) {
+            $end = $start->modify('+1 hour');
+        }
+
+        $params = [
+            'action' => 'TEMPLATE',
+            'text' => (string) ($event['summary'] ?? ''),
+            'dates' => $start->setTimezone(new DateTimeZone('UTC'))->format('Ymd\THis\Z') . '/' . $end->setTimezone(new DateTimeZone('UTC'))->format('Ymd\THis\Z'),
+            'location' => (string) ($event['location'] ?? ''),
+            'details' => (string) ($event['description'] ?? ''),
+        ];
+
+        return 'https://calendar.google.com/calendar/render?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+    }
+
+    /**
+     * @param array<string,mixed> $event
+     */
+    private function build_event_ics_download_url(array $event): string
+    {
+        $eventId = $this->build_event_identifier($event);
+        if ($eventId === '') {
+            return '';
+        }
+
+        $payload = $this->build_event_download_payload($event);
+        if ($payload === []) {
+            return '';
+        }
+
+        set_transient(self::EVENT_TRANSIENT_PREFIX . $eventId, $payload, HOUR_IN_SECONDS);
+
+        return add_query_arg(self::ICS_QUERY_VAR, $eventId, home_url('/'));
+    }
+
+    /**
+     * @param array<string,mixed> $event
+     */
+    private function build_event_identifier(array $event): string
+    {
+        if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
+            return '';
+        }
+
+        /** @var DateTimeImmutable $start */
+        $start = $event['start'];
+        $uid = is_string($event['uid'] ?? null) ? $event['uid'] : '';
+
+        return sha1($uid . '|' . $start->format('c') . '|' . (string) ($event['summary'] ?? ''));
+    }
+
+    /**
+     * @param array<string,mixed> $event
+     * @return array<string,mixed>
+     */
+    private function build_event_download_payload(array $event): array
+    {
+        if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
+            return [];
+        }
+
+        /** @var DateTimeImmutable $start */
+        $start = $event['start'];
+        $end = $event['end'] ?? null;
+
+        return [
+            'uid' => is_string($event['uid'] ?? null) ? $event['uid'] : '',
+            'summary' => (string) ($event['summary'] ?? ''),
+            'description' => (string) ($event['description'] ?? ''),
+            'location' => (string) ($event['location'] ?? ''),
+            'start_ts' => $start->getTimestamp(),
+            'end_ts' => $end instanceof DateTimeImmutable ? $end->getTimestamp() : null,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $event
+     */
+    private function build_single_event_ics(array $event): string
+    {
+        if (! is_numeric($event['start_ts'] ?? null)) {
+            return '';
+        }
+
+        $timezone = wp_timezone();
+        $start = (new DateTimeImmutable('@' . (int) $event['start_ts']))->setTimezone($timezone);
+        $endTs = is_numeric($event['end_ts'] ?? null) ? (int) $event['end_ts'] : null;
+        $end = $endTs !== null ? (new DateTimeImmutable('@' . $endTs))->setTimezone($timezone) : $start->modify('+1 hour');
+        if (! ($end instanceof DateTimeImmutable) || $end <= $start) {
+            $end = $start->modify('+1 hour');
+        }
+
+        $uid = sanitize_text_field((string) ($event['uid'] ?? ''));
+        if ($uid === '') {
+            $uid = sha1((string) $event['summary'] . '|' . $start->format('c')) . '@cal-google';
+        }
+
+        $lines = [
+            'BEGIN:VCALENDAR',
+            'VERSION:2.0',
+            'PRODID:-//Cal Google Shortcode//ES',
+            'CALSCALE:GREGORIAN',
+            'BEGIN:VEVENT',
+            'UID:' . $this->escape_ics_text($uid),
+            'DTSTAMP:' . gmdate('Ymd\THis\Z'),
+            'DTSTART:' . $start->setTimezone(new DateTimeZone('UTC'))->format('Ymd\THis\Z'),
+            'DTEND:' . $end->setTimezone(new DateTimeZone('UTC'))->format('Ymd\THis\Z'),
+            'SUMMARY:' . $this->escape_ics_text((string) ($event['summary'] ?? '')),
+            'DESCRIPTION:' . $this->escape_ics_text((string) ($event['description'] ?? '')),
+            'LOCATION:' . $this->escape_ics_text((string) ($event['location'] ?? '')),
+            'END:VEVENT',
+            'END:VCALENDAR',
+        ];
+
+        return implode("\r\n", $lines) . "\r\n";
+    }
+
+    private function escape_ics_text(string $value): string
+    {
+        $sanitized = wp_strip_all_tags($value);
+
+        return str_replace(
+            ["\\", ";", ",", "\r\n", "\r", "\n"],
+            ["\\\\", "\\;", "\\,", "\\n", "\\n", "\\n"],
+            $sanitized
+        );
     }
 
     /**
@@ -665,6 +861,8 @@ final class Cal_Google_Shortcode_Plugin
                 'no_events' => 'No events for this month.',
                 'location' => 'Location: ',
                 'event_link' => 'Open in Google Calendar',
+                'google_template_link' => 'Open Google Calendar template',
+                'download_ics' => 'Download .ics',
             ];
         }
 
@@ -672,6 +870,8 @@ final class Cal_Google_Shortcode_Plugin
             'no_events' => 'Sin eventos para este mes.',
             'location' => 'Ubicación: ',
             'event_link' => 'Abrir en Google Calendar',
+            'google_template_link' => 'Abrir plantilla de Google Calendar',
+            'download_ics' => 'Descargar .ics',
         ];
     }
 
