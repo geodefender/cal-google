@@ -13,6 +13,7 @@ if (! defined('ABSPATH')) {
 final class Cal_Google_Shortcode_Plugin
 {
     private const SHORTCODE = 'cal-google';
+    private const MAX_OCCURRENCES_PER_EVENT = 500;
 
     public function __construct()
     {
@@ -144,6 +145,10 @@ final class Cal_Google_Shortcode_Plugin
                         'description' => $current['DESCRIPTION'] ?? '',
                         'location' => $current['LOCATION'] ?? '',
                         'url' => $current['URL'] ?? '',
+                        'uid' => $current['UID'] ?? '',
+                        'rrule' => $current['RRULE'] ?? '',
+                        'exdate' => $this->parse_ics_date_list($current['EXDATE'] ?? []),
+                        'rdate' => $this->parse_ics_date_list($current['RDATE'] ?? []),
                         'start' => $start,
                         'end' => $end,
                     ];
@@ -164,7 +169,18 @@ final class Cal_Google_Shortcode_Plugin
 
             [$rawKey, $value] = $parts;
             $key = strtoupper(trim(explode(';', $rawKey, 2)[0]));
-            $current[$key] = $this->decode_ics_text(trim($value));
+            $decodedValue = $this->decode_ics_text(trim($value));
+
+            if (in_array($key, ['EXDATE', 'RDATE'], true)) {
+                if (! isset($current[$key]) || ! is_array($current[$key])) {
+                    $current[$key] = [];
+                }
+
+                $current[$key][] = $decodedValue;
+                continue;
+            }
+
+            $current[$key] = $decodedValue;
         }
 
         usort($events, static function (array $a, array $b): int {
@@ -172,6 +188,34 @@ final class Cal_Google_Shortcode_Plugin
         });
 
         return $events;
+    }
+
+    /**
+     * @param array<int,string>|string|null $rawValues
+     * @return array<int,DateTimeImmutable>
+     */
+    private function parse_ics_date_list($rawValues): array
+    {
+        if (is_string($rawValues)) {
+            $rawValues = [$rawValues];
+        }
+
+        if (! is_array($rawValues)) {
+            return [];
+        }
+
+        $dates = [];
+        foreach ($rawValues as $rawValue) {
+            $items = array_filter(array_map('trim', explode(',', (string) $rawValue)));
+            foreach ($items as $item) {
+                $date = $this->parse_ics_date($item);
+                if ($date instanceof DateTimeImmutable) {
+                    $dates[] = $date;
+                }
+            }
+        }
+
+        return $dates;
     }
 
     private function decode_ics_text(string $value): string
@@ -223,6 +267,8 @@ final class Cal_Google_Shortcode_Plugin
         $currentMonth = (int) wp_date('n');
         $translations = $this->get_translations($lang);
         $monthNames = $this->get_month_names($lang);
+
+        $events = $this->expand_events_for_year($events, $year);
 
         $byMonth = [];
         for ($month = 1; $month <= 12; $month++) {
@@ -303,6 +349,172 @@ final class Cal_Google_Shortcode_Plugin
         <?php
 
         return (string) ob_get_clean();
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $events
+     * @return array<int,array<string,mixed>>
+     */
+    private function expand_events_for_year(array $events, int $year): array
+    {
+        $expanded = [];
+        $timezone = wp_timezone();
+        $yearStart = new DateTimeImmutable($year . '-01-01 00:00:00', $timezone);
+        $yearEnd = new DateTimeImmutable($year . '-12-31 23:59:59', $timezone);
+
+        foreach ($events as $event) {
+            $duration = null;
+            if (($event['end'] ?? null) instanceof DateTimeImmutable && ($event['start'] ?? null) instanceof DateTimeImmutable) {
+                $duration = $event['end']->getTimestamp() - $event['start']->getTimestamp();
+            }
+
+            $isRecurring = ! empty($event['rrule']) && is_string($event['rrule']);
+            if (! $isRecurring) {
+                if (($event['start'] ?? null) instanceof DateTimeImmutable && (int) $event['start']->format('Y') === $year) {
+                    $expanded[] = $event;
+                }
+                continue;
+            }
+
+            $rrule = $this->parse_rrule((string) $event['rrule']);
+            $occurrences = $this->build_recurrence_occurrences($event, $rrule, $yearStart, $yearEnd);
+
+            foreach ($occurrences as $occurrenceStart) {
+                $copy = $event;
+                $copy['start'] = $occurrenceStart;
+                $copy['end'] = is_int($duration) ? $occurrenceStart->modify(($duration >= 0 ? '+' : '') . $duration . ' seconds') : null;
+                $expanded[] = $copy;
+            }
+        }
+
+        usort($expanded, static function (array $a, array $b): int {
+            /** @var DateTimeImmutable $startA */
+            $startA = $a['start'];
+            /** @var DateTimeImmutable $startB */
+            $startB = $b['start'];
+            return $startA <=> $startB;
+        });
+
+        return $expanded;
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function parse_rrule(string $rrule): array
+    {
+        $parsed = [];
+        $pairs = array_filter(array_map('trim', explode(';', $rrule)));
+        foreach ($pairs as $pair) {
+            $parts = explode('=', $pair, 2);
+            if (count($parts) !== 2) {
+                continue;
+            }
+
+            $parsed[strtoupper($parts[0])] = strtoupper($parts[1]);
+        }
+
+        return $parsed;
+    }
+
+    /**
+     * @param array<string,mixed> $event
+     * @param array<string,string> $rrule
+     * @return array<int,DateTimeImmutable>
+     */
+    private function build_recurrence_occurrences(array $event, array $rrule, DateTimeImmutable $yearStart, DateTimeImmutable $yearEnd): array
+    {
+        if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
+            return [];
+        }
+
+        $freq = $rrule['FREQ'] ?? '';
+        if (! in_array($freq, ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'], true)) {
+            return [];
+        }
+
+        $interval = max(1, (int) ($rrule['INTERVAL'] ?? 1));
+        $countLimit = max(1, (int) ($rrule['COUNT'] ?? self::MAX_OCCURRENCES_PER_EVENT));
+        $hardLimit = min(self::MAX_OCCURRENCES_PER_EVENT, $countLimit);
+        $until = $this->parse_ics_date($rrule['UNTIL'] ?? null);
+
+        $exdateMap = [];
+        foreach (($event['exdate'] ?? []) as $exdate) {
+            if ($exdate instanceof DateTimeImmutable) {
+                $exdateMap[$exdate->format('Ymd\THis')] = true;
+            }
+        }
+
+        $occurrences = [];
+        $occurrenceMap = [];
+        $current = $event['start'];
+        $generated = 0;
+
+        while ($generated < $hardLimit) {
+            if ($until instanceof DateTimeImmutable && $current > $until) {
+                break;
+            }
+
+            $generated++;
+
+            if ($current > $yearEnd && ! ($until instanceof DateTimeImmutable)) {
+                break;
+            }
+
+            $key = $current->format('Ymd\THis');
+            if (! isset($exdateMap[$key]) && $current >= $yearStart && $current <= $yearEnd) {
+                $occurrences[] = $current;
+                $occurrenceMap[$key] = true;
+            }
+
+            $next = $this->next_recurrence_date($current, $freq, $interval);
+            if (! ($next instanceof DateTimeImmutable) || $next <= $current) {
+                break;
+            }
+
+            $current = $next;
+        }
+
+        foreach (($event['rdate'] ?? []) as $rdate) {
+            if (! ($rdate instanceof DateTimeImmutable)) {
+                continue;
+            }
+
+            $key = $rdate->format('Ymd\THis');
+            if ($rdate < $yearStart || $rdate > $yearEnd || isset($exdateMap[$key]) || isset($occurrenceMap[$key])) {
+                continue;
+            }
+
+            $occurrences[] = $rdate;
+            $occurrenceMap[$key] = true;
+        }
+
+        usort($occurrences, static function (DateTimeImmutable $a, DateTimeImmutable $b): int {
+            return $a <=> $b;
+        });
+
+        return $occurrences;
+    }
+
+    private function next_recurrence_date(DateTimeImmutable $date, string $freq, int $interval): ?DateTimeImmutable
+    {
+        if ($freq === 'DAILY') {
+            return $date->modify('+' . $interval . ' day');
+        }
+
+        if ($freq === 'WEEKLY') {
+            return $date->modify('+' . $interval . ' week');
+        }
+
+        if ($freq === 'MONTHLY') {
+            return $date->modify('+' . $interval . ' month');
+        }
+
+        if ($freq === 'YEARLY') {
+            return $date->modify('+' . $interval . ' year');
+        }
+
+        return null;
     }
 
     /**
