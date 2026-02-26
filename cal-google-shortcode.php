@@ -25,6 +25,8 @@ final class Cal_Google_Shortcode_Plugin
         $atts = shortcode_atts([
             'source' => '',
             'months' => 'all',
+            'view' => 'accordion',
+            'group_by_month' => 'yes',
             'lang' => 'es',
             'bg_color' => '#f7f7f7',
             'border_color' => '#d9d9d9',
@@ -37,6 +39,8 @@ final class Cal_Google_Shortcode_Plugin
         }
 
         $monthsMode = $this->normalize_months_mode((string) $atts['months']);
+        $view = $this->normalize_view_mode((string) $atts['view']);
+        $groupByMonth = $this->normalize_boolean_attribute((string) $atts['group_by_month'], true);
         $lang = $this->normalize_language((string) $atts['lang']);
         $bgColor = $this->normalize_color((string) $atts['bg_color'], '#f7f7f7');
         $borderColor = $this->normalize_color((string) $atts['border_color'], '#d9d9d9');
@@ -47,7 +51,19 @@ final class Cal_Google_Shortcode_Plugin
             return '<p>' . esc_html($events->get_error_message()) . '</p>';
         }
 
-        return $this->render_year_accordion($events, $monthsMode, $lang, $bgColor, $borderColor, $textColor);
+        $year = (int) wp_date('Y');
+        $currentMonth = (int) wp_date('n');
+        $filteredEvents = $this->filter_events_by_months_mode(
+            $this->expand_events_for_year($events, $year),
+            $monthsMode,
+            $currentMonth
+        );
+
+        if ($view === 'list') {
+            return $this->render_event_list($filteredEvents, $monthsMode, $lang, $groupByMonth, $bgColor, $borderColor, $textColor);
+        }
+
+        return $this->render_year_accordion($filteredEvents, $monthsMode, $lang, $bgColor, $borderColor, $textColor);
     }
 
     private function normalize_months_mode(string $monthsMode): string
@@ -60,6 +76,29 @@ final class Cal_Google_Shortcode_Plugin
     {
         $lang = strtolower(trim($lang));
         return in_array($lang, ['es', 'en'], true) ? $lang : 'es';
+    }
+
+    private function normalize_view_mode(string $view): string
+    {
+        $view = strtolower(trim($view));
+        return in_array($view, ['accordion', 'list'], true) ? $view : 'accordion';
+    }
+
+    private function normalize_boolean_attribute(string $value, bool $default): bool
+    {
+        $normalized = strtolower(trim($value));
+        $truthy = ['1', 'true', 'yes', 'on', 'si'];
+        $falsy = ['0', 'false', 'no', 'off'];
+
+        if (in_array($normalized, $truthy, true)) {
+            return true;
+        }
+
+        if (in_array($normalized, $falsy, true)) {
+            return false;
+        }
+
+        return $default;
     }
 
     private function normalize_color(string $color, string $default): string
@@ -268,8 +307,6 @@ final class Cal_Google_Shortcode_Plugin
         $translations = $this->get_translations($lang);
         $monthNames = $this->get_month_names($lang);
 
-        $events = $this->expand_events_for_year($events, $year);
-
         $byMonth = [];
         for ($month = 1; $month <= 12; $month++) {
             $byMonth[$month] = [];
@@ -316,30 +353,7 @@ final class Cal_Google_Shortcode_Plugin
                             <p class="cal-google-empty"><?php echo esc_html($translations['no_events']); ?></p>
                         <?php else : ?>
                             <?php foreach ($byMonth[$month] as $event) : ?>
-                                <?php
-                                /** @var DateTimeImmutable $start */
-                                $start = $event['start'];
-                                /** @var DateTimeImmutable|null $end */
-                                $end = $event['end'];
-                                $when = $this->format_event_datetime($start, $lang);
-                                if ($end instanceof DateTimeImmutable) {
-                                    $when .= ' - ' . $this->format_event_datetime($end, $lang);
-                                }
-                                $eventUrl = esc_url((string) ($event['url'] ?? ''));
-                                ?>
-                                <article class="cal-google-event">
-                                    <div class="cal-google-event-title"><?php echo esc_html((string) $event['summary']); ?></div>
-                                    <div class="cal-google-event-meta"><?php echo esc_html($when); ?></div>
-                                    <?php if (! empty($event['location'])) : ?>
-                                        <div class="cal-google-event-meta"><?php echo esc_html($translations['location']) . esc_html((string) $event['location']); ?></div>
-                                    <?php endif; ?>
-                                    <?php if (! empty($event['description'])) : ?>
-                                        <div class="cal-google-event-description"><?php echo esc_html((string) $event['description']); ?></div>
-                                    <?php endif; ?>
-                                    <?php if ($eventUrl !== '') : ?>
-                                        <div class="cal-google-event-description"><a href="<?php echo $eventUrl; ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($translations['event_link']); ?></a></div>
-                                    <?php endif; ?>
-                                </article>
+                                <?php $this->render_event_item($event, $lang, $translations); ?>
                             <?php endforeach; ?>
                         <?php endif; ?>
                     </div>
@@ -349,6 +363,130 @@ final class Cal_Google_Shortcode_Plugin
         <?php
 
         return (string) ob_get_clean();
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $events
+     */
+    private function render_event_list(array $events, string $monthsMode, string $lang, bool $groupByMonth, string $bgColor, string $borderColor, string $textColor): string
+    {
+        $year = (int) wp_date('Y');
+        $currentMonth = (int) wp_date('n');
+        $translations = $this->get_translations($lang);
+        $monthNames = $this->get_month_names($lang);
+        $uid = wp_unique_id('cal-google-');
+        $monthsToShow = $monthsMode === 'current' ? range($currentMonth, 12) : range(1, 12);
+
+        $byMonth = [];
+        foreach ($events as $event) {
+            /** @var DateTimeImmutable $start */
+            $start = $event['start'];
+            $month = (int) $start->format('n');
+            if (! isset($byMonth[$month])) {
+                $byMonth[$month] = [];
+            }
+            $byMonth[$month][] = $event;
+        }
+
+        ob_start();
+        ?>
+        <div class="cal-google" id="<?php echo esc_attr($uid); ?>">
+            <style>
+                #<?php echo esc_html($uid); ?> .cal-google-list { border: 1px solid <?php echo esc_html($borderColor); ?>; border-radius: 8px; background: #fff; overflow: hidden; }
+                #<?php echo esc_html($uid); ?> .cal-google-list-month { margin: 0; }
+                #<?php echo esc_html($uid); ?> .cal-google-list-month-title { margin: 0; padding: 12px 14px; background: <?php echo esc_html($bgColor); ?>; color: <?php echo esc_html($textColor); ?>; font-weight: 600; }
+                #<?php echo esc_html($uid); ?> .cal-google-list-month-events { padding: 0 14px; }
+                #<?php echo esc_html($uid); ?> .cal-google-event { padding: 10px 0; border-bottom: 1px solid #ececec; }
+                #<?php echo esc_html($uid); ?> .cal-google-event:last-child { border-bottom: 0; }
+                #<?php echo esc_html($uid); ?> .cal-google-event-title { font-weight: 600; margin-bottom: 4px; color: <?php echo esc_html($textColor); ?>; }
+                #<?php echo esc_html($uid); ?> .cal-google-event-meta { color: <?php echo esc_html($textColor); ?>; font-size: 0.95em; }
+                #<?php echo esc_html($uid); ?> .cal-google-event-description { margin-top: 6px; white-space: pre-line; color: <?php echo esc_html($textColor); ?>; }
+                #<?php echo esc_html($uid); ?> .cal-google-empty { padding: 12px 14px; color: #777; font-style: italic; }
+            </style>
+
+            <section class="cal-google-list">
+                <?php if (empty($events)) : ?>
+                    <p class="cal-google-empty"><?php echo esc_html($translations['no_events']); ?></p>
+                <?php elseif (! $groupByMonth) : ?>
+                    <div class="cal-google-list-month-events">
+                        <?php foreach ($events as $event) : ?>
+                            <?php $this->render_event_item($event, $lang, $translations); ?>
+                        <?php endforeach; ?>
+                    </div>
+                <?php else : ?>
+                    <?php foreach ($monthsToShow as $month) : ?>
+                        <div class="cal-google-list-month">
+                            <h3 class="cal-google-list-month-title"><?php echo esc_html($monthNames[$month] . ' ' . $year); ?></h3>
+                            <div class="cal-google-list-month-events">
+                                <?php if (empty($byMonth[$month])) : ?>
+                                    <p class="cal-google-empty"><?php echo esc_html($translations['no_events']); ?></p>
+                                <?php else : ?>
+                                    <?php foreach ($byMonth[$month] as $event) : ?>
+                                        <?php $this->render_event_item($event, $lang, $translations); ?>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </section>
+        </div>
+        <?php
+
+        return (string) ob_get_clean();
+    }
+
+    /**
+     * @param array<string,mixed> $event
+     * @param array<string,string> $translations
+     */
+    private function render_event_item(array $event, string $lang, array $translations): void
+    {
+        /** @var DateTimeImmutable $start */
+        $start = $event['start'];
+        /** @var DateTimeImmutable|null $end */
+        $end = $event['end'];
+        $when = $this->format_event_datetime($start, $lang);
+        if ($end instanceof DateTimeImmutable) {
+            $when .= ' - ' . $this->format_event_datetime($end, $lang);
+        }
+        $eventUrl = esc_url((string) ($event['url'] ?? ''));
+        ?>
+        <article class="cal-google-event">
+            <div class="cal-google-event-title"><?php echo esc_html((string) $event['summary']); ?></div>
+            <div class="cal-google-event-meta"><?php echo esc_html($when); ?></div>
+            <?php if (! empty($event['location'])) : ?>
+                <div class="cal-google-event-meta"><?php echo esc_html($translations['location']) . esc_html((string) $event['location']); ?></div>
+            <?php endif; ?>
+            <?php if (! empty($event['description'])) : ?>
+                <div class="cal-google-event-description"><?php echo esc_html((string) $event['description']); ?></div>
+            <?php endif; ?>
+            <?php if ($eventUrl !== '') : ?>
+                <div class="cal-google-event-description"><a href="<?php echo $eventUrl; ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($translations['event_link']); ?></a></div>
+            <?php endif; ?>
+        </article>
+        <?php
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $events
+     * @return array<int,array<string,mixed>>
+     */
+    private function filter_events_by_months_mode(array $events, string $monthsMode, int $currentMonth): array
+    {
+        if ($monthsMode !== 'current') {
+            return $events;
+        }
+
+        $filtered = array_filter($events, static function (array $event) use ($currentMonth): bool {
+            if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
+                return false;
+            }
+
+            return (int) $event['start']->format('n') >= $currentMonth;
+        });
+
+        return array_values($filtered);
     }
 
     /**
