@@ -23,6 +23,8 @@ final class Cal_Google_Shortcode_Plugin
     {
         $atts = shortcode_atts([
             'source' => '',
+            'months' => 'all',
+            'lang' => 'es',
         ], $atts, self::SHORTCODE);
 
         $source = esc_url_raw(trim((string) $atts['source']));
@@ -30,12 +32,27 @@ final class Cal_Google_Shortcode_Plugin
             return '<p>' . esc_html__('No se indicó una URL de calendario en el atributo source.', 'cal-google') . '</p>';
         }
 
+        $monthsMode = $this->normalize_months_mode((string) $atts['months']);
+        $lang = $this->normalize_language((string) $atts['lang']);
+
         $events = $this->get_events_from_source($source);
         if (is_wp_error($events)) {
             return '<p>' . esc_html($events->get_error_message()) . '</p>';
         }
 
-        return $this->render_year_accordion($events);
+        return $this->render_year_accordion($events, $monthsMode, $lang);
+    }
+
+    private function normalize_months_mode(string $monthsMode): string
+    {
+        $monthsMode = strtolower(trim($monthsMode));
+        return in_array($monthsMode, ['all', 'current'], true) ? $monthsMode : 'all';
+    }
+
+    private function normalize_language(string $lang): string
+    {
+        $lang = strtolower(trim($lang));
+        return in_array($lang, ['es', 'en'], true) ? $lang : 'es';
     }
 
     /**
@@ -114,6 +131,7 @@ final class Cal_Google_Shortcode_Plugin
                         'summary' => $current['SUMMARY'] ?? __('(Sin título)', 'cal-google'),
                         'description' => $current['DESCRIPTION'] ?? '',
                         'location' => $current['LOCATION'] ?? '',
+                        'url' => $current['URL'] ?? '',
                         'start' => $start,
                         'end' => $end,
                     ];
@@ -187,9 +205,12 @@ final class Cal_Google_Shortcode_Plugin
     /**
      * @param array<int,array<string,mixed>> $events
      */
-    private function render_year_accordion(array $events): string
+    private function render_year_accordion(array $events, string $monthsMode, string $lang): string
     {
         $year = (int) wp_date('Y');
+        $currentMonth = (int) wp_date('n');
+        $translations = $this->get_translations($lang);
+        $monthNames = $this->get_month_names($lang);
 
         $byMonth = [];
         for ($month = 1; $month <= 12; $month++) {
@@ -205,6 +226,10 @@ final class Cal_Google_Shortcode_Plugin
             $month = (int) $start->format('n');
             $byMonth[$month][] = $event;
         }
+
+        $monthsToShow = $monthsMode === 'current'
+            ? range($currentMonth, 12)
+            : range(1, 12);
 
         $uid = wp_unique_id('cal-google-');
 
@@ -223,13 +248,13 @@ final class Cal_Google_Shortcode_Plugin
                 #<?php echo esc_html($uid); ?> .cal-google-empty { color: #777; font-style: italic; }
             </style>
 
-            <?php for ($month = 1; $month <= 12; $month++) : ?>
-                <?php $monthName = wp_date('F', mktime(0, 0, 0, $month, 1, $year)); ?>
-                <details class="cal-google-month" <?php echo $month === (int) wp_date('n') ? 'open' : ''; ?>>
+            <?php foreach ($monthsToShow as $month) : ?>
+                <?php $monthName = $monthNames[$month]; ?>
+                <details class="cal-google-month" <?php echo $month === $currentMonth ? 'open' : ''; ?>>
                     <summary><?php echo esc_html($monthName . ' ' . $year); ?></summary>
                     <div class="cal-google-month-content">
                         <?php if (empty($byMonth[$month])) : ?>
-                            <p class="cal-google-empty"><?php esc_html_e('Sin eventos para este mes.', 'cal-google'); ?></p>
+                            <p class="cal-google-empty"><?php echo esc_html($translations['no_events']); ?></p>
                         <?php else : ?>
                             <?php foreach ($byMonth[$month] as $event) : ?>
                                 <?php
@@ -237,30 +262,101 @@ final class Cal_Google_Shortcode_Plugin
                                 $start = $event['start'];
                                 /** @var DateTimeImmutable|null $end */
                                 $end = $event['end'];
-                                $when = wp_date('d/m/Y H:i', $start->getTimestamp());
+                                $when = $this->format_event_datetime($start, $lang);
                                 if ($end instanceof DateTimeImmutable) {
-                                    $when .= ' - ' . wp_date('d/m/Y H:i', $end->getTimestamp());
+                                    $when .= ' - ' . $this->format_event_datetime($end, $lang);
                                 }
+                                $eventUrl = esc_url((string) ($event['url'] ?? ''));
                                 ?>
                                 <article class="cal-google-event">
                                     <div class="cal-google-event-title"><?php echo esc_html((string) $event['summary']); ?></div>
                                     <div class="cal-google-event-meta"><?php echo esc_html($when); ?></div>
                                     <?php if (! empty($event['location'])) : ?>
-                                        <div class="cal-google-event-meta"><?php echo esc_html__('Ubicación: ', 'cal-google') . esc_html((string) $event['location']); ?></div>
+                                        <div class="cal-google-event-meta"><?php echo esc_html($translations['location']) . esc_html((string) $event['location']); ?></div>
                                     <?php endif; ?>
                                     <?php if (! empty($event['description'])) : ?>
                                         <div class="cal-google-event-description"><?php echo esc_html((string) $event['description']); ?></div>
+                                    <?php endif; ?>
+                                    <?php if ($eventUrl !== '') : ?>
+                                        <div class="cal-google-event-description"><a href="<?php echo $eventUrl; ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($translations['event_link']); ?></a></div>
                                     <?php endif; ?>
                                 </article>
                             <?php endforeach; ?>
                         <?php endif; ?>
                     </div>
                 </details>
-            <?php endfor; ?>
+            <?php endforeach; ?>
         </div>
         <?php
 
         return (string) ob_get_clean();
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function get_translations(string $lang): array
+    {
+        if ($lang === 'en') {
+            return [
+                'no_events' => 'No events for this month.',
+                'location' => 'Location: ',
+                'event_link' => 'Open in Google Calendar',
+            ];
+        }
+
+        return [
+            'no_events' => 'Sin eventos para este mes.',
+            'location' => 'Ubicación: ',
+            'event_link' => 'Abrir en Google Calendar',
+        ];
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function get_month_names(string $lang): array
+    {
+        if ($lang === 'en') {
+            return [
+                1 => 'January',
+                2 => 'February',
+                3 => 'March',
+                4 => 'April',
+                5 => 'May',
+                6 => 'June',
+                7 => 'July',
+                8 => 'August',
+                9 => 'September',
+                10 => 'October',
+                11 => 'November',
+                12 => 'December',
+            ];
+        }
+
+        return [
+            1 => 'Enero',
+            2 => 'Febrero',
+            3 => 'Marzo',
+            4 => 'Abril',
+            5 => 'Mayo',
+            6 => 'Junio',
+            7 => 'Julio',
+            8 => 'Agosto',
+            9 => 'Septiembre',
+            10 => 'Octubre',
+            11 => 'Noviembre',
+            12 => 'Diciembre',
+        ];
+    }
+
+    private function format_event_datetime(DateTimeImmutable $dateTime, string $lang): string
+    {
+        if ($lang === 'en') {
+            return wp_date('m/d/Y h:i A', $dateTime->getTimestamp());
+        }
+
+        return wp_date('d/m/Y H:i', $dateTime->getTimestamp());
     }
 }
 
