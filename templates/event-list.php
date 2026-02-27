@@ -1,16 +1,8 @@
-<div class="cal-google" id="<?php echo esc_attr($uid); ?>">
-    <style>
-        #<?php echo esc_html($uid); ?> .cal-google-list { border: 1px solid <?php echo esc_html($borderColor); ?>; border-radius: 8px; background: #fff; overflow: hidden; }
-        #<?php echo esc_html($uid); ?> .cal-google-list-month { margin: 0; }
-        #<?php echo esc_html($uid); ?> .cal-google-list-month-title { margin: 0; padding: 12px 14px; background: <?php echo esc_html($bgColor); ?>; color: <?php echo esc_html($textColor); ?>; font-weight: 600; }
-        #<?php echo esc_html($uid); ?> .cal-google-list-month-events { padding: 0 14px; }
-        #<?php echo esc_html($uid); ?> .cal-google-event { padding: 10px 0; border-bottom: 1px solid #ececec; }
-        #<?php echo esc_html($uid); ?> .cal-google-event:last-child { border-bottom: 0; }
-        #<?php echo esc_html($uid); ?> .cal-google-event-title { font-weight: 600; margin-bottom: 4px; color: <?php echo esc_html($textColor); ?>; }
-        #<?php echo esc_html($uid); ?> .cal-google-event-meta { color: <?php echo esc_html($textColor); ?>; font-size: 0.95em; }
-        #<?php echo esc_html($uid); ?> .cal-google-event-description { margin-top: 6px; white-space: pre-line; color: <?php echo esc_html($textColor); ?>; }
-        #<?php echo esc_html($uid); ?> .cal-google-empty { padding: 12px 14px; color: #777; font-style: italic; }
-    </style>
+<div
+    class="cal-google"
+    id="<?php echo esc_attr($uid); ?>"
+    style="--cal-bg: <?php echo esc_attr($bgColor); ?>; --cal-border: <?php echo esc_attr($borderColor); ?>; --cal-text: <?php echo esc_attr($textColor); ?>;"
+>
     <section class="cal-google-list">
         <?php if (empty($eventItems)) : ?>
             <p class="cal-google-empty"><?php echo esc_html($translations['no_events']); ?></p>

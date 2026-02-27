@@ -1,0 +1,82 @@
+.cal-google {
+    --cal-bg: #f7f7f7;
+    --cal-border: #d9d9d9;
+    --cal-text: #222222;
+}
+
+.cal-google .cal-google-month {
+    border: 1px solid var(--cal-border);
+    border-radius: 8px;
+    margin: 0 0 10px;
+    overflow: hidden;
+}
+
+.cal-google .cal-google-month > summary {
+    cursor: pointer;
+    padding: 12px 14px;
+    background: var(--cal-bg);
+    font-weight: 600;
+    color: var(--cal-text);
+}
+
+.cal-google .cal-google-month-content {
+    padding: 10px 14px 14px;
+}
+
+.cal-google .cal-google-list {
+    border: 1px solid var(--cal-border);
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+}
+
+.cal-google .cal-google-list-month {
+    margin: 0;
+}
+
+.cal-google .cal-google-list-month-title {
+    margin: 0;
+    padding: 12px 14px;
+    background: var(--cal-bg);
+    color: var(--cal-text);
+    font-weight: 600;
+}
+
+.cal-google .cal-google-list-month-events {
+    padding: 0 14px;
+}
+
+.cal-google .cal-google-event {
+    padding: 10px 0;
+    border-bottom: 1px solid #ececec;
+}
+
+.cal-google .cal-google-event:last-child {
+    border-bottom: 0;
+}
+
+.cal-google .cal-google-event-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--cal-text);
+}
+
+.cal-google .cal-google-event-meta {
+    color: var(--cal-text);
+    font-size: 0.95em;
+}
+
+.cal-google .cal-google-event-description {
+    margin-top: 6px;
+    white-space: pre-line;
+    color: var(--cal-text);
+}
+
+.cal-google .cal-google-empty {
+    color: #777;
+    font-style: italic;
+}
+
+.cal-google .cal-google-list .cal-google-empty {
+    padding: 12px 14px;
+}
