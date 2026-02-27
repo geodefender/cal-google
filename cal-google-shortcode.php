@@ -13,13 +13,13 @@ if (! defined('ABSPATH')) {
 interface CalGoogleIcsFetcherInterface
 {
     /** @return array<int,Event>|WP_Error */
-    public function get_events_from_source(string $source);
+    public function get_events_from_source(string $source, ?DateTimeImmutable $rangeStart = null, ?DateTimeImmutable $rangeEnd = null);
 }
 
 interface CalGoogleIcsParserInterface
 {
     /** @return array<int,Event> */
-    public function parse_ics_events(string $ics): array;
+    public function parse_ics_events(string $ics, ?DateTimeImmutable $rangeStart = null, ?DateTimeImmutable $rangeEnd = null): array;
 
     /**
      * @param array<int,string>|string|null $rawValues
@@ -166,7 +166,7 @@ final class Event
 
 final class IcsParser implements CalGoogleIcsParserInterface
 {
-    public function parse_ics_events(string $ics): array
+    public function parse_ics_events(string $ics, ?DateTimeImmutable $rangeStart = null, ?DateTimeImmutable $rangeEnd = null): array
     {
         $lines = preg_split('/\r\n|\r|\n/', $ics) ?: [];
         $unfolded = [];
@@ -192,7 +192,8 @@ final class IcsParser implements CalGoogleIcsParserInterface
             if (trim($line) === 'END:VEVENT') {
                 $inEvent = false;
                 $start = $this->parse_ics_date($current['DTSTART'] ?? null);
-                if ($start instanceof DateTimeImmutable) {
+                $inRange = $this->is_within_range($start, $rangeStart, $rangeEnd);
+                if ($start instanceof DateTimeImmutable && $inRange) {
                     $events[] = new Event(
                         (string) ($current['SUMMARY'] ?? ''),
                         (string) ($current['DESCRIPTION'] ?? ''),
@@ -240,6 +241,23 @@ final class IcsParser implements CalGoogleIcsParserInterface
         });
 
         return $events;
+    }
+
+    private function is_within_range(?DateTimeImmutable $date, ?DateTimeImmutable $rangeStart, ?DateTimeImmutable $rangeEnd): bool
+    {
+        if (! ($date instanceof DateTimeImmutable)) {
+            return false;
+        }
+
+        if ($rangeStart instanceof DateTimeImmutable && $date < $rangeStart) {
+            return false;
+        }
+
+        if ($rangeEnd instanceof DateTimeImmutable && $date > $rangeEnd) {
+            return false;
+        }
+
+        return true;
     }
 
     public function parse_ics_date_list($rawValues): array
@@ -298,14 +316,14 @@ final class IcsFetcher implements CalGoogleIcsFetcherInterface
     {
     }
 
-    public function get_events_from_source(string $source)
+    public function get_events_from_source(string $source, ?DateTimeImmutable $rangeStart = null, ?DateTimeImmutable $rangeEnd = null)
     {
         $policyError = $this->validate_source_url_policy($source);
         if ($policyError instanceof WP_Error) {
             return $policyError;
         }
 
-        $cache_key = 'cal_google_' . md5($source);
+        $cache_key = 'cal_google_' . md5($source . '|' . ($rangeStart?->format('c') ?? 'null') . '|' . ($rangeEnd?->format('c') ?? 'null'));
         $cached = get_transient($cache_key);
         if (is_array($cached)) {
             return $cached;
@@ -331,7 +349,19 @@ final class IcsFetcher implements CalGoogleIcsFetcherInterface
             return new WP_Error(CalGoogleErrorCodes::EMPTY_RESPONSE, CalGoogleErrorCodes::EMPTY_RESPONSE, ['status' => $status]);
         }
 
-        $events = $this->parser->parse_ics_events($body);
+        $events = $this->parser->parse_ics_events($body, $rangeStart, $rangeEnd);
+
+        if (defined('WP_DEBUG') && WP_DEBUG === true && ($rangeStart instanceof DateTimeImmutable || $rangeEnd instanceof DateTimeImmutable)) {
+            $allEventsCount = count($this->parser->parse_ics_events($body));
+            error_log(sprintf(
+                '[cal-google] parse_ics_events range filter: before=%d after=%d start=%s end=%s',
+                $allEventsCount,
+                count($events),
+                $rangeStart?->format('c') ?? 'null',
+                $rangeEnd?->format('c') ?? 'null'
+            ));
+        }
+
         set_transient($cache_key, $events, CalGoogleConfig::CACHE_TTL_SECONDS);
 
         return $events;
@@ -685,7 +715,8 @@ final class Cal_Google_Shortcode_Plugin
             return $this->renderer->render_error_message(__('No se indicó una URL de calendario en el atributo source.', CalGoogleConfig::UI_TEXT_DOMAIN));
         }
 
-        $events = $this->fetcher->get_events_from_source($validatedAtts['source']);
+        $targetRange = $this->build_target_range_for_months_mode($validatedAtts['months']);
+        $events = $this->fetcher->get_events_from_source($validatedAtts['source'], $targetRange['start'], $targetRange['end']);
         if (is_wp_error($events)) {
             return $this->renderer->render_error_message($this->human_readable_fetch_error($events, $validatedAtts['lang']));
         }
@@ -735,6 +766,23 @@ final class Cal_Google_Shortcode_Plugin
     {
         $monthsMode = strtolower(trim($monthsMode));
         return in_array($monthsMode, ['all', 'current'], true) ? $monthsMode : CalGoogleConfig::DEFAULT_MONTHS;
+    }
+
+    /** @return array{start:?DateTimeImmutable,end:?DateTimeImmutable} */
+    private function build_target_range_for_months_mode(string $monthsMode): array
+    {
+        if ($monthsMode === 'all') {
+            return ['start' => null, 'end' => null];
+        }
+
+        $timezone = wp_timezone();
+        $year = (int) wp_date('Y');
+        $currentMonth = (int) wp_date('n');
+
+        return [
+            'start' => new DateTimeImmutable($year . '-' . str_pad((string) $currentMonth, 2, '0', STR_PAD_LEFT) . '-01 00:00:00', $timezone),
+            'end' => new DateTimeImmutable($year . '-12-31 23:59:59', $timezone),
+        ];
     }
 
     private function normalize_view_mode(string $view): string
