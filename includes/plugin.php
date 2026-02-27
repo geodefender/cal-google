@@ -18,6 +18,7 @@ final class Cal_Google_Shortcode_Plugin
         $this->renderer = $renderer ?? new CalendarRenderer([$this, 'build_google_calendar_template_url'], [$this, 'build_event_ics_download_url']);
 
         add_shortcode(self::SHORTCODE, [$this, 'render_shortcode']);
+        add_action('wp_enqueue_scripts', [$this, 'enqueue_assets']);
         add_filter('query_vars', [$this, 'register_query_vars']);
         add_action('template_redirect', [$this, 'maybe_serve_event_ics']);
     }
@@ -67,8 +68,6 @@ final class Cal_Google_Shortcode_Plugin
 
     public function render_shortcode($atts): string
     {
-        $this->enqueue_assets();
-
         $validatedAtts = $this->validate_shortcode_attributes(is_array($atts) ? $atts : []);
         if ($validatedAtts['source'] === '') {
             return $this->renderer->render_error_message(__('No se indicó una URL de calendario en el atributo source.', CalGoogleConfig::UI_TEXT_DOMAIN));
@@ -91,7 +90,7 @@ final class Cal_Google_Shortcode_Plugin
         return $this->renderer->render_year_accordion($filteredEvents, $validatedAtts['months'], $validatedAtts['lang'], $validatedAtts['bg_color'], $validatedAtts['border_color'], $validatedAtts['text_color']);
     }
 
-    private function enqueue_assets(): void
+    public function enqueue_assets(): void
     {
         $cssPath = dirname(__DIR__) . '/assets/cal-google.css';
         $pluginMainFile = dirname(__DIR__) . '/cal-google-shortcode.php';
@@ -111,6 +110,7 @@ final class Cal_Google_Shortcode_Plugin
      */
     private function validate_shortcode_attributes(array $atts): array
     {
+        $atts = $this->recover_malformed_shortcode_attributes($atts);
         $atts = shortcode_atts(CalGoogleConfig::shortcode_defaults(), $atts, self::SHORTCODE);
 
         return [
@@ -123,6 +123,51 @@ final class Cal_Google_Shortcode_Plugin
             'border_color' => $this->normalize_color((string) $atts['border_color'], CalGoogleConfig::DEFAULT_BORDER_COLOR),
             'text_color' => $this->normalize_color((string) $atts['text_color'], CalGoogleConfig::DEFAULT_TEXT_COLOR),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $atts
+     * @return array<string,mixed>
+     */
+    private function recover_malformed_shortcode_attributes(array $atts): array
+    {
+        $blob = $this->build_shortcode_attribute_blob($atts);
+
+        if (($atts['source'] ?? '') === '' && preg_match('/https:\/\/[^\s"\]]+\.ics(?:\?[^\s"\]]*)?/i', $blob, $match) === 1) {
+            $atts['source'] = $match[0];
+        }
+
+        foreach (['months', 'view', 'lang', 'bg_color', 'border_color', 'text_color', 'group_by_month'] as $attributeName) {
+            if (($atts[$attributeName] ?? '') !== '') {
+                continue;
+            }
+
+            if (preg_match('/\b' . preg_quote($attributeName, '/') . '\s*=\s*"([^"]+)"/i', $blob, $match) === 1) {
+                $atts[$attributeName] = $match[1];
+            }
+        }
+
+        if (isset($atts['source']) && is_string($atts['source'])) {
+            if (preg_match('/https:\/\/[^\s"\]]+\.ics(?:\?[^\s"\]]*)?/i', $atts['source'], $match) === 1) {
+                $atts['source'] = $match[0];
+            }
+        }
+
+        return $atts;
+    }
+
+    /** @param array<string,mixed> $atts */
+    private function build_shortcode_attribute_blob(array $atts): string
+    {
+        $parts = [];
+        foreach ($atts as $key => $value) {
+            $parts[] = (string) $key;
+            if (is_scalar($value)) {
+                $parts[] = (string) $value;
+            }
+        }
+
+        return implode(' ', $parts);
     }
 
     private function normalize_months_mode(string $monthsMode): string
@@ -176,6 +221,14 @@ final class Cal_Google_Shortcode_Plugin
     private function normalize_color(string $color, string $default): string
     {
         $color = trim($color);
+        if (preg_match('/^#[a-fA-F0-9]{5}$/', $color) === 1) {
+            $color .= '0';
+        }
+
+        if (preg_match('/^#[a-fA-F0-9]{3}$/', $color) === 1) {
+            $color = '#' . $color[1] . $color[1] . $color[2] . $color[2] . $color[3] . $color[3];
+        }
+
         if (preg_match('/^#[a-fA-F0-9]{6}$/', $color) === 1) {
             return strtolower($color);
         }
