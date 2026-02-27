@@ -133,7 +133,8 @@ final class Cal_Google_Shortcode_Plugin
     {
         $blob = $this->build_shortcode_attribute_blob($atts);
 
-        if (($atts['source'] ?? '') === '' && preg_match('/https:\/\/[^\s"\]]+\.ics(?:\?[^\s"\]]*)?/i', $blob, $match) === 1) {
+        $currentSource = isset($atts['source']) && is_string($atts['source']) ? $atts['source'] : '';
+        if (! $this->contains_valid_ics_url($currentSource) && preg_match('/https:\/\/[^\s"\]]+\.ics(?:\?[^\s"\]]*)?/i', $blob, $match) === 1) {
             $atts['source'] = $match[0];
         }
 
@@ -142,8 +143,16 @@ final class Cal_Google_Shortcode_Plugin
                 continue;
             }
 
-            if (preg_match('/\b' . preg_quote($attributeName, '/') . '\s*=\s*"([^"]+)"/i', $blob, $match) === 1) {
-                $atts[$attributeName] = $match[1];
+            if (preg_match('/\b' . preg_quote($attributeName, '/') . '\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s\]]+))/i', $blob, $match) === 1) {
+                $value = $match[1] ?? '';
+                if ($value === '') {
+                    $value = $match[2] ?? '';
+                }
+                if ($value === '') {
+                    $value = $match[3] ?? '';
+                }
+
+                $atts[$attributeName] = $value;
             }
         }
 
@@ -221,6 +230,10 @@ final class Cal_Google_Shortcode_Plugin
     private function normalize_color(string $color, string $default): string
     {
         $color = trim($color);
+        if (preg_match('/#([a-fA-F0-9]{3}|[a-fA-F0-9]{5,6})\b/', $color, $match) === 1) {
+            $color = '#' . $match[1];
+        }
+
         if (preg_match('/^#[a-fA-F0-9]{5}$/', $color) === 1) {
             $color .= '0';
         }
@@ -234,6 +247,11 @@ final class Cal_Google_Shortcode_Plugin
         }
 
         return $default;
+    }
+
+    private function contains_valid_ics_url(string $source): bool
+    {
+        return preg_match('/https:\/\/[^\s"\]]+\.ics(?:\?[^\s"\]]*)?/i', $source) === 1;
     }
 
     private function human_readable_fetch_error(WP_Error $error, string $lang): string
