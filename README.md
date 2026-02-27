@@ -29,6 +29,21 @@ Plugin simple para renderizar eventos de un calendario ICS de Google Calendar en
 - `border_color` (opcional, default: `#d9d9d9`): color de borde del contenedor.
 - `text_color` (opcional, default: `#222222`): color del texto principal.
 
+### Política de URL de `source`
+
+- Solo se aceptan URLs con esquema `https`.
+- Se rechazan hosts internos/locales (`localhost`, `*.local`, `*.internal`, `*.home`, `*.lan`).
+- Se rechazan IPs privadas, loopback, link-local o reservadas (incluyendo hosts que resuelven DNS hacia esas IPs).
+- Si la URL no cumple la política, el plugin devuelve un `WP_Error` con detalle claro.
+
+### Whitelist administrativa opcional de dominios
+
+- Opción de WordPress: `cal_google_allowed_domains`
+  - Formato: string separado por comas (ejemplo: `calendar.google.com,example.org`).
+  - Cuando está definida, `source` solo permite ese dominio y subdominios.
+- Filtro opcional: `cal_google_allowed_domains`
+  - Recibe `array<string>` de dominios y permite sobreescribir la whitelist desde código.
+
 ### Defaults internos de red y caché
 
 - Timeout HTTP para descargar `source`: `20` segundos.
@@ -51,7 +66,7 @@ Plugin simple para renderizar eventos de un calendario ICS de Google Calendar en
 
 ## Comportamiento
 
-- Descarga la URL `source` por HTTP.
+- Descarga la URL `source` por HTTPS (si cumple la política de seguridad de URL).
 - Parsea eventos `VEVENT` básicos (`SUMMARY`, `DESCRIPTION`, `LOCATION`, `URL`, `DTSTART`, `DTEND`).
 - Filtra y muestra solo eventos del año actual.
 - Guarda caché por 1 hora usando transients.

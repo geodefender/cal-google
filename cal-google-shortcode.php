@@ -48,10 +48,12 @@ final class CalGoogleErrorCodes
     public const REQUEST_FAILED = 'cal_google_request_failed';
     public const BAD_STATUS = 'cal_google_bad_status';
     public const EMPTY_RESPONSE = 'cal_google_empty_response';
+    public const URL_POLICY_VIOLATION = 'cal_google_url_policy_violation';
 }
 
 final class CalGoogleConfig
 {
+    public const OPTION_ALLOWED_DOMAINS = 'cal_google_allowed_domains';
     public const DEFAULT_MONTHS = 'all';
     public const DEFAULT_LANG = 'es';
     public const DEFAULT_VIEW = 'accordion';
@@ -66,6 +68,36 @@ final class CalGoogleConfig
 
     public const UI_TEXT_DOMAIN = 'cal-google';
     public const TEMPLATES_DIR = __DIR__ . '/templates';
+
+    /** @return array<int,string> */
+    public static function allowed_domains(): array
+    {
+        $configured = get_option(self::OPTION_ALLOWED_DOMAINS, '');
+        $rawDomains = is_string($configured) ? explode(',', $configured) : [];
+
+        /**
+         * Allows admins/developers to define a host whitelist for remote calendar sources.
+         *
+         * @param array<int,string> $rawDomains
+         */
+        $rawDomains = apply_filters('cal_google_allowed_domains', $rawDomains);
+
+        $domains = [];
+        foreach ($rawDomains as $rawDomain) {
+            $domain = strtolower(trim((string) $rawDomain));
+            if ($domain === '') {
+                continue;
+            }
+
+            if (preg_match('/\A[a-z0-9.-]+\z/', $domain) !== 1) {
+                continue;
+            }
+
+            $domains[] = ltrim($domain, '.');
+        }
+
+        return array_values(array_unique($domains));
+    }
 
     /** @return array<string,string> */
     public static function shortcode_defaults(): array
@@ -268,6 +300,11 @@ final class IcsFetcher implements CalGoogleIcsFetcherInterface
 
     public function get_events_from_source(string $source)
     {
+        $policyError = $this->validate_source_url_policy($source);
+        if ($policyError instanceof WP_Error) {
+            return $policyError;
+        }
+
         $cache_key = 'cal_google_' . md5($source);
         $cached = get_transient($cache_key);
         if (is_array($cached)) {
@@ -298,6 +335,102 @@ final class IcsFetcher implements CalGoogleIcsFetcherInterface
         set_transient($cache_key, $events, CalGoogleConfig::CACHE_TTL_SECONDS);
 
         return $events;
+    }
+
+    private function validate_source_url_policy(string $source): ?WP_Error
+    {
+        $url = wp_parse_url($source);
+        if (! is_array($url)) {
+            return $this->url_policy_error('Invalid URL format.');
+        }
+
+        $scheme = strtolower((string) ($url['scheme'] ?? ''));
+        if ($scheme !== 'https') {
+            return $this->url_policy_error('Only HTTPS URLs are allowed.');
+        }
+
+        $host = strtolower((string) ($url['host'] ?? ''));
+        if ($host === '') {
+            return $this->url_policy_error('URL host is required.');
+        }
+
+        if ($this->is_internal_hostname($host)) {
+            return $this->url_policy_error('Internal hosts are not allowed.');
+        }
+
+        if ($this->is_ip_address($host) && ! $this->is_public_ip($host)) {
+            return $this->url_policy_error('Private or local IP addresses are not allowed.');
+        }
+
+        $allowedDomains = CalGoogleConfig::allowed_domains();
+        if (! empty($allowedDomains) && ! $this->host_matches_whitelist($host, $allowedDomains)) {
+            return $this->url_policy_error('Host is not in the allowed domains whitelist.');
+        }
+
+        foreach ($this->resolve_host_ips($host) as $resolvedIp) {
+            if (! $this->is_public_ip($resolvedIp)) {
+                return $this->url_policy_error('Host resolves to a private or local IP address.');
+            }
+        }
+
+        return null;
+    }
+
+    private function url_policy_error(string $reason): WP_Error
+    {
+        return new WP_Error(CalGoogleErrorCodes::URL_POLICY_VIOLATION, $reason, ['status' => 400]);
+    }
+
+    private function is_internal_hostname(string $host): bool
+    {
+        if (in_array($host, ['localhost', 'loopback'], true)) {
+            return true;
+        }
+
+        return preg_match('/(\\.localhost|\\.local|\\.internal|\\.home|\\.lan)\z/', $host) === 1;
+    }
+
+    private function is_ip_address(string $value): bool
+    {
+        return filter_var($value, FILTER_VALIDATE_IP) !== false;
+    }
+
+    private function is_public_ip(string $ip): bool
+    {
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    }
+
+    /** @param array<int,string> $allowedDomains */
+    private function host_matches_whitelist(string $host, array $allowedDomains): bool
+    {
+        foreach ($allowedDomains as $allowedDomain) {
+            if ($host === $allowedDomain || str_ends_with($host, '.' . $allowedDomain)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @return array<int,string> */
+    private function resolve_host_ips(string $host): array
+    {
+        $ips = [];
+        $ipv4 = gethostbynamel($host);
+        if (is_array($ipv4)) {
+            $ips = array_merge($ips, $ipv4);
+        }
+
+        $aaaa = dns_get_record($host, DNS_AAAA);
+        if (is_array($aaaa)) {
+            foreach ($aaaa as $record) {
+                if (isset($record['ipv6']) && is_string($record['ipv6'])) {
+                    $ips[] = $record['ipv6'];
+                }
+            }
+        }
+
+        return array_values(array_unique($ips));
     }
 }
 
@@ -647,6 +780,7 @@ final class Cal_Google_Shortcode_Plugin
                 CalGoogleErrorCodes::REQUEST_FAILED => 'Unable to download calendar feed.',
                 CalGoogleErrorCodes::BAD_STATUS => 'Calendar URL returned an invalid HTTP status.',
                 CalGoogleErrorCodes::EMPTY_RESPONSE => 'Calendar response is empty.',
+                CalGoogleErrorCodes::URL_POLICY_VIOLATION => 'Calendar URL does not comply with the allowed URL policy.',
                 default => 'Calendar feed could not be processed.',
             };
         }
@@ -655,6 +789,7 @@ final class Cal_Google_Shortcode_Plugin
             CalGoogleErrorCodes::REQUEST_FAILED => 'No se pudo descargar el calendario.',
             CalGoogleErrorCodes::BAD_STATUS => 'La URL del calendario devolvió un estado HTTP inválido.',
             CalGoogleErrorCodes::EMPTY_RESPONSE => 'La respuesta del calendario está vacía.',
+            CalGoogleErrorCodes::URL_POLICY_VIOLATION => 'La URL del calendario no cumple con la política de seguridad permitida.',
             default => 'No se pudo procesar el calendario.',
         };
     }
