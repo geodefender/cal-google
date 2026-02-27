@@ -14,6 +14,9 @@ final class CalGoogleConfig
     public const DEFAULT_LANG = 'es';
     public const DEFAULT_VIEW = 'accordion';
     public const DEFAULT_GROUP_BY_MONTH = 'yes';
+    public const DEFAULT_LINKS = 'all';
+    public const DEFAULT_CALENDAR_PROVIDER = 'google';
+    public const DEFAULT_SHOW_MONTH_COUNTER = 'yes';
     public const DEFAULT_BG_COLOR = '#f7f7f7';
     public const DEFAULT_BORDER_COLOR = '#d9d9d9';
     public const DEFAULT_TEXT_COLOR = '#222222';
@@ -64,6 +67,9 @@ final class CalGoogleConfig
             'view' => self::DEFAULT_VIEW,
             'group_by_month' => self::DEFAULT_GROUP_BY_MONTH,
             'lang' => self::DEFAULT_LANG,
+            'links' => self::DEFAULT_LINKS,
+            'calendar_provider' => self::DEFAULT_CALENDAR_PROVIDER,
+            'show_month_counter' => self::DEFAULT_SHOW_MONTH_COUNTER,
             'bg_color' => self::DEFAULT_BG_COLOR,
             'border_color' => self::DEFAULT_BORDER_COLOR,
             'text_color' => self::DEFAULT_TEXT_COLOR,

@@ -25,6 +25,15 @@ Plugin simple para renderizar eventos de un calendario ICS de Google Calendar en
 - `lang` (opcional, default: `es`):
   - `es`: textos y meses en español.
   - `en`: textos y meses en inglés.
+- `links` (opcional, default: `all`): define qué links se muestran por evento.
+  - `all`: muestra todos (`event`, `add`, `download`).
+  - `none`: oculta todos los links.
+  - Lista CSV: combina `event`, `add`, `download` (ejemplo: `links="event,add"`).
+- `calendar_provider` (opcional, default: `google`, usado cuando `links` incluye `add`):
+  - `google`, `outlook`, `yahoo`, `ics`.
+- `show_month_counter` (opcional, default: `yes`):
+  - `yes`: muestra contador de eventos por mes junto al título del mes.
+  - `no`: oculta el contador.
 - `bg_color` (opcional, default: `#f7f7f7`): color de fondo para cabeceras de mes.
 - `border_color` (opcional, default: `#d9d9d9`): color de borde del contenedor.
 - `text_color` (opcional, default: `#222222`): color del texto principal.
@@ -61,7 +70,7 @@ Plugin simple para renderizar eventos de un calendario ICS de Google Calendar en
 ```
 
 ```text
-[cal-google source="https://calendar.google.com/calendar/ical/.../basic.ics" view="list" group_by_month="no" months="current" lang="en"]
+[cal-google source="https://calendar.google.com/calendar/ical/.../basic.ics" view="list" group_by_month="no" months="current" lang="en" links="event,add" calendar_provider="outlook" show_month_counter="no"]
 ```
 
 ## Comportamiento
@@ -70,4 +79,4 @@ Plugin simple para renderizar eventos de un calendario ICS de Google Calendar en
 - Parsea eventos `VEVENT` básicos (`SUMMARY`, `DESCRIPTION`, `LOCATION`, `URL`, `DTSTART`, `DTEND`).
 - Filtra y muestra solo eventos del año actual.
 - Guarda caché por 1 hora usando transients.
-- Si el evento tiene propiedad `URL`, se muestra un link para abrirlo en Google Calendar.
+- Permite mostrar links configurables por evento (`event`, `add`, `download`) y usar distintos proveedores para “Agregar al calendario”.

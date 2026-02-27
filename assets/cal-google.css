@@ -80,3 +80,7 @@
 .cal-google .cal-google-list .cal-google-empty {
     padding: 12px 14px;
 }
+
+.cal-google .cal-google-month-counter {
+    font-weight: 400;
+}

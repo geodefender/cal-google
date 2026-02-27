@@ -24,10 +24,10 @@ interface CalGoogleIcsParserInterface
 interface CalGoogleCalendarRendererInterface
 {
     /** @param array<int,Event> $events */
-    public function render_year_accordion(array $events, string $monthsMode, string $lang, string $bgColor, string $borderColor, string $textColor): string;
+    public function render_year_accordion(array $events, string $monthsMode, string $lang, string $bgColor, string $borderColor, string $textColor, bool $showMonthCounter, array $visibleLinks, string $calendarProvider): string;
 
     /** @param array<int,Event> $events */
-    public function render_event_list(array $events, string $monthsMode, string $lang, bool $groupByMonth, string $bgColor, string $borderColor, string $textColor): string;
+    public function render_event_list(array $events, string $monthsMode, string $lang, bool $groupByMonth, string $bgColor, string $borderColor, string $textColor, bool $showMonthCounter, array $visibleLinks, string $calendarProvider): string;
 
     public function render_error_message(string $message): string;
 }
