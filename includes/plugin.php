@@ -135,18 +135,25 @@ final class Cal_Google_Shortcode_Plugin
     private function recover_malformed_shortcode_attributes(array $atts): array
     {
         $blob = $this->build_shortcode_attribute_blob($atts);
-
         $currentSource = isset($atts['source']) && is_string($atts['source']) ? $atts['source'] : '';
-        if (! $this->contains_valid_ics_url($currentSource) && preg_match('/https:\/\/[^\s"\]]+\.ics(?:\?[^\s"\]]*)?/i', $blob, $match) === 1) {
+        $sourceBlob = $this->extract_nested_shortcode_blob($currentSource);
+
+        $combinedBlob = trim($blob . ' ' . $sourceBlob);
+
+        if (! $this->contains_valid_ics_url($currentSource) && preg_match('/https:\/\/[^\s"\]]+\.ics(?:\?[^\s"\]]*)?/i', $combinedBlob, $match) === 1) {
             $atts['source'] = $match[0];
         }
 
+        $defaults = CalGoogleConfig::shortcode_defaults();
         foreach (['months', 'view', 'lang', 'bg_color', 'border_color', 'text_color', 'group_by_month', 'links', 'calendar_provider', 'show_month_counter'] as $attributeName) {
-            if (($atts[$attributeName] ?? '') !== '') {
+            $currentValue = isset($atts[$attributeName]) && is_scalar($atts[$attributeName]) ? (string) $atts[$attributeName] : '';
+            $defaultValue = isset($defaults[$attributeName]) ? (string) $defaults[$attributeName] : '';
+
+            if ($currentValue !== '' && $currentValue !== $defaultValue) {
                 continue;
             }
 
-            if (preg_match('/\b' . preg_quote($attributeName, '/') . '\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s\]]+))/i', $blob, $match) === 1) {
+            if (preg_match('/\b' . preg_quote($attributeName, '/') . '\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s\]]+))/i', $combinedBlob, $match) === 1) {
                 $value = $match[1] ?? '';
                 if ($value === '') {
                     $value = $match[2] ?? '';
@@ -166,6 +173,19 @@ final class Cal_Google_Shortcode_Plugin
         }
 
         return $atts;
+    }
+
+    private function extract_nested_shortcode_blob(string $source): string
+    {
+        if ($source === '' || strpos($source, '[') === false) {
+            return '';
+        }
+
+        if (preg_match('/\[cal-google\s+([^\]]+)\]/i', $source, $match) === 1) {
+            return (string) ($match[1] ?? '');
+        }
+
+        return '';
     }
 
     /** @param array<string,mixed> $atts */
