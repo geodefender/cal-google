@@ -15,7 +15,7 @@
         <?php else : ?>
             <?php foreach ($monthsToShow as $month) : ?>
                 <div class="cal-google-list-month">
-                    <h3 class="cal-google-list-month-title"><?php echo esc_html($monthNames[$month] . ' ' . $year); ?></h3>
+                    <h3 class="cal-google-list-month-title"><?php echo esc_html($monthNames[$month] . ' ' . $year); ?><?php if ($showMonthCounter) : ?><span class="cal-google-month-counter"> (<?php echo esc_html((string) count($byMonth[$month] ?? [])); ?>)</span><?php endif; ?></h3>
                     <div class="cal-google-list-month-events">
                         <?php if (empty($byMonth[$month])) : ?>
                             <p class="cal-google-empty"><?php echo esc_html($translations['no_events']); ?></p>

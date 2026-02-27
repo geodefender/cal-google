@@ -4,19 +4,19 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
     private string $templatesDir;
 
     /** @var callable */
-    private $googleTemplateUrlBuilder;
+    private $addToCalendarUrlBuilder;
 
     /** @var callable */
     private $icsDownloadUrlBuilder;
 
-    public function __construct(callable $googleTemplateUrlBuilder, callable $icsDownloadUrlBuilder, ?string $templatesDir = null)
+    public function __construct(callable $addToCalendarUrlBuilder, callable $icsDownloadUrlBuilder, ?string $templatesDir = null)
     {
-        $this->googleTemplateUrlBuilder = $googleTemplateUrlBuilder;
+        $this->addToCalendarUrlBuilder = $addToCalendarUrlBuilder;
         $this->icsDownloadUrlBuilder = $icsDownloadUrlBuilder;
         $this->templatesDir = $templatesDir ?? CalGoogleConfig::TEMPLATES_DIR;
     }
 
-    public function render_year_accordion(array $events, string $monthsMode, string $lang, string $bgColor, string $borderColor, string $textColor): string
+    public function render_year_accordion(array $events, string $monthsMode, string $lang, string $bgColor, string $borderColor, string $textColor, bool $showMonthCounter, array $visibleLinks, string $calendarProvider): string
     {
         $year = (int) wp_date('Y');
         $currentMonth = (int) wp_date('n');
@@ -27,7 +27,7 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
         $byMonth = array_fill(1, 12, []);
         foreach ($events as $event) {
             if ($event->year() === $year) {
-                $byMonth[$event->month()][] = $this->build_event_view_model($event, $lang, $translations);
+                $byMonth[$event->month()][] = $this->build_event_view_model($event, $lang, $translations, $visibleLinks, $calendarProvider);
             }
         }
 
@@ -42,10 +42,11 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
             'bgColor' => $bgColor,
             'borderColor' => $borderColor,
             'textColor' => $textColor,
+            'showMonthCounter' => $showMonthCounter,
         ]);
     }
 
-    public function render_event_list(array $events, string $monthsMode, string $lang, bool $groupByMonth, string $bgColor, string $borderColor, string $textColor): string
+    public function render_event_list(array $events, string $monthsMode, string $lang, bool $groupByMonth, string $bgColor, string $borderColor, string $textColor, bool $showMonthCounter, array $visibleLinks, string $calendarProvider): string
     {
         $year = (int) wp_date('Y');
         $currentMonth = (int) wp_date('n');
@@ -56,7 +57,7 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
         $eventItems = [];
         $byMonth = [];
         foreach ($events as $event) {
-            $item = $this->build_event_view_model($event, $lang, $translations);
+            $item = $this->build_event_view_model($event, $lang, $translations, $visibleLinks, $calendarProvider);
             $eventItems[] = $item;
             $byMonth[$event->month()][] = $item;
         }
@@ -73,6 +74,7 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
             'bgColor' => $bgColor,
             'borderColor' => $borderColor,
             'textColor' => $textColor,
+            'showMonthCounter' => $showMonthCounter,
             'renderer' => $this,
         ]);
     }
@@ -88,9 +90,14 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
         return $this->render_template($template, $args);
     }
 
-    /** @return array<string,mixed> */
-    private function build_event_view_model(Event $event, string $lang, array $translations): array
+    /** @param array<int,string> $visibleLinks
+     *  @param array<string,mixed> $translations
+     *  @return array<string,mixed>
+     */
+    private function build_event_view_model(Event $event, string $lang, array $translations, array $visibleLinks, string $calendarProvider): array
     {
+        $visibleMap = array_fill_keys($visibleLinks, true);
+
         return [
             'summary' => $event->summary,
             'summary_fallback' => $translations['untitled_event'],
@@ -98,11 +105,11 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
             'location' => $event->location,
             'location_label' => $translations['location'],
             'description' => $event->description,
-            'event_url' => esc_url($event->url),
+            'event_url' => isset($visibleMap['event']) ? esc_url($event->url) : '',
             'event_link_label' => $translations['event_link'],
-            'google_template_url' => esc_url(call_user_func($this->googleTemplateUrlBuilder, $event)),
-            'google_template_link_label' => $translations['google_template_link'],
-            'ics_download_url' => esc_url(call_user_func($this->icsDownloadUrlBuilder, $event)),
+            'add_to_calendar_url' => isset($visibleMap['add']) ? esc_url(call_user_func($this->addToCalendarUrlBuilder, $event, $calendarProvider)) : '',
+            'add_to_calendar_label' => $translations['add_to_calendar'],
+            'ics_download_url' => isset($visibleMap['download']) ? esc_url(call_user_func($this->icsDownloadUrlBuilder, $event)) : '',
             'download_ics_label' => $translations['download_ics'],
         ];
     }
@@ -129,8 +136,8 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
                 'untitled_event' => 'Untitled event',
                 'no_events' => 'No events for this month.',
                 'location' => 'Location: ',
-                'event_link' => 'Open in Google Calendar',
-                'google_template_link' => 'Open Google Calendar template',
+                'event_link' => 'Open event link',
+                'add_to_calendar' => 'Add to calendar',
                 'download_ics' => 'Download .ics',
             ];
         }
@@ -139,8 +146,8 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
             'untitled_event' => 'Sin título',
             'no_events' => 'Sin eventos para este mes.',
             'location' => 'Ubicación: ',
-            'event_link' => 'Abrir en Google Calendar',
-            'google_template_link' => 'Abrir plantilla de Google Calendar',
+            'event_link' => 'Abrir enlace del evento',
+            'add_to_calendar' => 'Agregar al calendario',
             'download_ics' => 'Descargar .ics',
         ];
     }

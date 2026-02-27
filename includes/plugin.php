@@ -15,7 +15,7 @@ final class Cal_Google_Shortcode_Plugin
     {
         $this->parser = $parser ?? new IcsParser();
         $this->fetcher = $fetcher ?? new IcsFetcher($this->parser);
-        $this->renderer = $renderer ?? new CalendarRenderer([$this, 'build_google_calendar_template_url'], [$this, 'build_event_ics_download_url']);
+        $this->renderer = $renderer ?? new CalendarRenderer([$this, 'build_add_to_calendar_url'], [$this, 'build_event_ics_download_url']);
 
         add_shortcode(self::SHORTCODE, [$this, 'render_shortcode']);
         add_action('wp_enqueue_scripts', [$this, 'enqueue_assets']);
@@ -84,10 +84,10 @@ final class Cal_Google_Shortcode_Plugin
         $filteredEvents = $this->filter_events_by_months_mode($this->expand_events_for_year($events, $year), $validatedAtts['months'], $currentMonth);
 
         if ($validatedAtts['view'] === 'list') {
-            return $this->renderer->render_event_list($filteredEvents, $validatedAtts['months'], $validatedAtts['lang'], $validatedAtts['group_by_month'], $validatedAtts['bg_color'], $validatedAtts['border_color'], $validatedAtts['text_color']);
+            return $this->renderer->render_event_list($filteredEvents, $validatedAtts['months'], $validatedAtts['lang'], $validatedAtts['group_by_month'], $validatedAtts['bg_color'], $validatedAtts['border_color'], $validatedAtts['text_color'], $validatedAtts['show_month_counter'], $validatedAtts['visible_links'], $validatedAtts['calendar_provider']);
         }
 
-        return $this->renderer->render_year_accordion($filteredEvents, $validatedAtts['months'], $validatedAtts['lang'], $validatedAtts['bg_color'], $validatedAtts['border_color'], $validatedAtts['text_color']);
+        return $this->renderer->render_year_accordion($filteredEvents, $validatedAtts['months'], $validatedAtts['lang'], $validatedAtts['bg_color'], $validatedAtts['border_color'], $validatedAtts['text_color'], $validatedAtts['show_month_counter'], $validatedAtts['visible_links'], $validatedAtts['calendar_provider']);
     }
 
     public function enqueue_assets(): void
@@ -106,7 +106,7 @@ final class Cal_Google_Shortcode_Plugin
 
     /**
      * @param array<string,mixed> $atts
-     * @return array{source:string,months:string,view:string,group_by_month:bool,lang:string,bg_color:string,border_color:string,text_color:string}
+     * @return array{source:string,months:string,view:string,group_by_month:bool,lang:string,visible_links:array<int,string>,calendar_provider:string,show_month_counter:bool,bg_color:string,border_color:string,text_color:string}
      */
     private function validate_shortcode_attributes(array $atts): array
     {
@@ -119,6 +119,9 @@ final class Cal_Google_Shortcode_Plugin
             'view' => $this->normalize_view_mode((string) $atts['view']),
             'group_by_month' => $this->normalize_boolean_attribute((string) $atts['group_by_month'], true),
             'lang' => $this->normalize_language((string) $atts['lang']),
+            'visible_links' => $this->normalize_visible_links((string) $atts['links']),
+            'calendar_provider' => $this->normalize_calendar_provider((string) $atts['calendar_provider']),
+            'show_month_counter' => $this->normalize_boolean_attribute((string) $atts['show_month_counter'], true),
             'bg_color' => $this->normalize_color((string) $atts['bg_color'], CalGoogleConfig::DEFAULT_BG_COLOR),
             'border_color' => $this->normalize_color((string) $atts['border_color'], CalGoogleConfig::DEFAULT_BORDER_COLOR),
             'text_color' => $this->normalize_color((string) $atts['text_color'], CalGoogleConfig::DEFAULT_TEXT_COLOR),
@@ -138,7 +141,7 @@ final class Cal_Google_Shortcode_Plugin
             $atts['source'] = $match[0];
         }
 
-        foreach (['months', 'view', 'lang', 'bg_color', 'border_color', 'text_color', 'group_by_month'] as $attributeName) {
+        foreach (['months', 'view', 'lang', 'bg_color', 'border_color', 'text_color', 'group_by_month', 'links', 'calendar_provider', 'show_month_counter'] as $attributeName) {
             if (($atts[$attributeName] ?? '') !== '') {
                 continue;
             }
@@ -225,6 +228,47 @@ final class Cal_Google_Shortcode_Plugin
     {
         $lang = strtolower(trim($lang));
         return in_array($lang, ['es', 'en'], true) ? $lang : CalGoogleConfig::DEFAULT_LANG;
+    }
+
+
+    /** @return array<int,string> */
+    private function normalize_visible_links(string $raw): array
+    {
+        $value = strtolower(trim($raw));
+        if ($value === '' || $value === 'all') {
+            return ['event', 'add', 'download'];
+        }
+
+        if ($value === 'none') {
+            return [];
+        }
+
+        $allowed = [
+            'event' => 'event',
+            'source' => 'event',
+            'add' => 'add',
+            'calendar' => 'add',
+            'google_template' => 'add',
+            'download' => 'download',
+            'ics' => 'download',
+        ];
+
+        $visible = [];
+        foreach (preg_split('/\s*,\s*/', $value) as $token) {
+            if ($token === '' || ! isset($allowed[$token])) {
+                continue;
+            }
+
+            $visible[$allowed[$token]] = true;
+        }
+
+        return array_keys($visible);
+    }
+
+    private function normalize_calendar_provider(string $provider): string
+    {
+        $provider = strtolower(trim($provider));
+        return in_array($provider, ['google', 'outlook', 'yahoo', 'ics'], true) ? $provider : CalGoogleConfig::DEFAULT_CALENDAR_PROVIDER;
     }
 
     private function normalize_color(string $color, string $default): string
@@ -405,7 +449,7 @@ final class Cal_Google_Shortcode_Plugin
         };
     }
 
-    public function build_google_calendar_template_url(Event $event): string
+    public function build_add_to_calendar_url(Event $event, string $provider): string
     {
         $start = $event->start;
         $end = $event->end;
@@ -413,15 +457,39 @@ final class Cal_Google_Shortcode_Plugin
             $end = $start->modify('+1 hour');
         }
 
-        $params = [
-            'action' => 'TEMPLATE',
-            'text' => $event->summary,
-            'dates' => $start->setTimezone(new DateTimeZone('UTC'))->format('Ymd\THis\Z') . '/' . $end->setTimezone(new DateTimeZone('UTC'))->format('Ymd\THis\Z'),
-            'location' => $event->location,
-            'details' => $event->description,
-        ];
+        $utcStart = $start->setTimezone(new DateTimeZone('UTC'));
+        $utcEnd = $end->setTimezone(new DateTimeZone('UTC'));
 
-        return 'https://calendar.google.com/calendar/render?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+        return match ($provider) {
+            'google' => 'https://calendar.google.com/calendar/render?' . http_build_query([
+                'action' => 'TEMPLATE',
+                'text' => $event->summary,
+                'dates' => $utcStart->format('Ymd\THis\Z') . '/' . $utcEnd->format('Ymd\THis\Z'),
+                'location' => $event->location,
+                'details' => $event->description,
+            ], '', '&', PHP_QUERY_RFC3986),
+            'outlook' => 'https://outlook.live.com/calendar/0/deeplink/compose?' . http_build_query([
+                'path' => '/calendar/action/compose',
+                'rru' => 'addevent',
+                'subject' => $event->summary,
+                'startdt' => $utcStart->format('Y-m-d\TH:i:s\Z'),
+                'enddt' => $utcEnd->format('Y-m-d\TH:i:s\Z'),
+                'location' => $event->location,
+                'body' => $event->description,
+            ], '', '&', PHP_QUERY_RFC3986),
+            'yahoo' => 'https://calendar.yahoo.com/?' . http_build_query([
+                'v' => '60',
+                'view' => 'd',
+                'type' => '20',
+                'title' => $event->summary,
+                'st' => $utcStart->format('Ymd\THis\Z'),
+                'et' => $utcEnd->format('Ymd\THis\Z'),
+                'in_loc' => $event->location,
+                'desc' => $event->description,
+            ], '', '&', PHP_QUERY_RFC3986),
+            'ics' => $this->build_event_ics_download_url($event),
+            default => '',
+        };
     }
 
     public function build_event_ics_download_url(Event $event): string
