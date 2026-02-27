@@ -141,8 +141,12 @@ final class Cal_Google_Shortcode_Plugin
             $atts['source'] = $match[0];
         }
 
+        $defaults = CalGoogleConfig::shortcode_defaults();
         foreach (['months', 'view', 'lang', 'bg_color', 'border_color', 'text_color', 'group_by_month', 'links', 'calendar_provider', 'show_month_counter'] as $attributeName) {
-            if (($atts[$attributeName] ?? '') !== '') {
+            $currentValue = isset($atts[$attributeName]) && is_scalar($atts[$attributeName]) ? (string) $atts[$attributeName] : '';
+            $defaultValue = isset($defaults[$attributeName]) ? (string) $defaults[$attributeName] : '';
+
+            if ($currentValue !== '' && $currentValue !== $defaultValue) {
                 continue;
             }
 
