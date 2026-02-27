@@ -483,6 +483,7 @@ final class Cal_Google_Shortcode_Plugin
     private const MAX_OCCURRENCES_PER_EVENT = 500;
     private const ICS_QUERY_VAR = 'cal_google_ics';
     private const EVENT_TRANSIENT_PREFIX = 'cal_google_event_';
+    private const STYLE_HANDLE = 'cal-google-shortcode';
 
     private CalGoogleIcsParserInterface $parser;
     private CalGoogleIcsFetcherInterface $fetcher;
@@ -544,6 +545,8 @@ final class Cal_Google_Shortcode_Plugin
 
     public function render_shortcode($atts): string
     {
+        $this->enqueue_assets();
+
         $validatedAtts = $this->validate_shortcode_attributes(is_array($atts) ? $atts : []);
         if ($validatedAtts['source'] === '') {
             return $this->renderer->render_error_message(__('No se indicó una URL de calendario en el atributo source.', CalGoogleConfig::UI_TEXT_DOMAIN));
@@ -563,6 +566,16 @@ final class Cal_Google_Shortcode_Plugin
         }
 
         return $this->renderer->render_year_accordion($filteredEvents, $validatedAtts['months'], $validatedAtts['lang'], $validatedAtts['bg_color'], $validatedAtts['border_color'], $validatedAtts['text_color']);
+    }
+
+    private function enqueue_assets(): void
+    {
+        wp_enqueue_style(
+            self::STYLE_HANDLE,
+            plugins_url('assets/cal-google.css', __FILE__),
+            [],
+            (string) filemtime(__DIR__ . '/assets/cal-google.css')
+        );
     }
 
     /**
