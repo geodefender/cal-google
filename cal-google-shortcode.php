@@ -49,6 +49,36 @@ interface CalGoogleCalendarRendererInterface
     public function render_event_list(array $events, string $monthsMode, string $lang, bool $groupByMonth, string $bgColor, string $borderColor, string $textColor): string;
 }
 
+final class CalGoogleConfig
+{
+    public const DEFAULT_MONTHS = 'all';
+    public const DEFAULT_LANG = 'es';
+    public const DEFAULT_VIEW = 'accordion';
+    public const DEFAULT_GROUP_BY_MONTH = 'yes';
+    public const DEFAULT_BG_COLOR = '#f7f7f7';
+    public const DEFAULT_BORDER_COLOR = '#d9d9d9';
+    public const DEFAULT_TEXT_COLOR = '#222222';
+
+    public const HTTP_TIMEOUT = 20;
+    public const HTTP_REDIRECTION = 3;
+    public const CACHE_TTL_SECONDS = HOUR_IN_SECONDS;
+
+    /** @return array<string,string> */
+    public static function shortcode_defaults(): array
+    {
+        return [
+            'source' => '',
+            'months' => self::DEFAULT_MONTHS,
+            'view' => self::DEFAULT_VIEW,
+            'group_by_month' => self::DEFAULT_GROUP_BY_MONTH,
+            'lang' => self::DEFAULT_LANG,
+            'bg_color' => self::DEFAULT_BG_COLOR,
+            'border_color' => self::DEFAULT_BORDER_COLOR,
+            'text_color' => self::DEFAULT_TEXT_COLOR,
+        ];
+    }
+}
+
 final class Event
 {
     /** @var array<int,DateTimeImmutable> */
@@ -247,8 +277,8 @@ final class IcsFetcher implements CalGoogleIcsFetcherInterface
         }
 
         $response = wp_remote_get($source, [
-            'timeout' => 20,
-            'redirection' => 3,
+            'timeout' => CalGoogleConfig::HTTP_TIMEOUT,
+            'redirection' => CalGoogleConfig::HTTP_REDIRECTION,
             'user-agent' => 'WordPress Cal Google Shortcode',
         ]);
 
@@ -267,7 +297,7 @@ final class IcsFetcher implements CalGoogleIcsFetcherInterface
         }
 
         $events = $this->parser->parse_ics_events($body);
-        set_transient($cache_key, $events, HOUR_IN_SECONDS);
+        set_transient($cache_key, $events, CalGoogleConfig::CACHE_TTL_SECONDS);
 
         return $events;
     }
@@ -549,29 +579,19 @@ final class Cal_Google_Shortcode_Plugin
 
     public function render_shortcode($atts): string
     {
-        $atts = shortcode_atts([
-            'source' => '',
-            'months' => 'all',
-            'view' => 'accordion',
-            'group_by_month' => 'yes',
-            'lang' => 'es',
-            'bg_color' => '#f7f7f7',
-            'border_color' => '#d9d9d9',
-            'text_color' => '#222222',
-        ], $atts, self::SHORTCODE);
-
-        $source = esc_url_raw(trim((string) $atts['source']));
-        if (! $source) {
+        $validatedAtts = $this->validate_shortcode_attributes(is_array($atts) ? $atts : []);
+        if ($validatedAtts['source'] === '') {
             return '<p>' . esc_html__('No se indicó una URL de calendario en el atributo source.', 'cal-google') . '</p>';
         }
 
-        $monthsMode = $this->normalize_months_mode((string) $atts['months']);
-        $view = $this->normalize_view_mode((string) $atts['view']);
-        $groupByMonth = $this->normalize_boolean_attribute((string) $atts['group_by_month'], true);
-        $lang = $this->normalize_language((string) $atts['lang']);
-        $bgColor = $this->normalize_color((string) $atts['bg_color'], '#f7f7f7');
-        $borderColor = $this->normalize_color((string) $atts['border_color'], '#d9d9d9');
-        $textColor = $this->normalize_color((string) $atts['text_color'], '#222222');
+        $source = $validatedAtts['source'];
+        $monthsMode = $validatedAtts['months'];
+        $view = $validatedAtts['view'];
+        $groupByMonth = $validatedAtts['group_by_month'];
+        $lang = $validatedAtts['lang'];
+        $bgColor = $validatedAtts['bg_color'];
+        $borderColor = $validatedAtts['border_color'];
+        $textColor = $validatedAtts['text_color'];
 
         $events = $this->get_events_from_source($source);
         if (is_wp_error($events)) {
@@ -593,22 +613,42 @@ final class Cal_Google_Shortcode_Plugin
         return $this->renderer->render_year_accordion($filteredEvents, $monthsMode, $lang, $bgColor, $borderColor, $textColor);
     }
 
+    /**
+     * @param array<string,mixed> $atts
+     * @return array{source:string,months:string,view:string,group_by_month:bool,lang:string,bg_color:string,border_color:string,text_color:string}
+     */
+    private function validate_shortcode_attributes(array $atts): array
+    {
+        $atts = shortcode_atts(CalGoogleConfig::shortcode_defaults(), $atts, self::SHORTCODE);
+
+        return [
+            'source' => esc_url_raw(trim((string) $atts['source'])),
+            'months' => $this->normalize_months_mode((string) $atts['months']),
+            'view' => $this->normalize_view_mode((string) $atts['view']),
+            'group_by_month' => $this->normalize_boolean_attribute((string) $atts['group_by_month'], true),
+            'lang' => $this->normalize_language((string) $atts['lang']),
+            'bg_color' => $this->normalize_color((string) $atts['bg_color'], CalGoogleConfig::DEFAULT_BG_COLOR),
+            'border_color' => $this->normalize_color((string) $atts['border_color'], CalGoogleConfig::DEFAULT_BORDER_COLOR),
+            'text_color' => $this->normalize_color((string) $atts['text_color'], CalGoogleConfig::DEFAULT_TEXT_COLOR),
+        ];
+    }
+
     private function normalize_months_mode(string $monthsMode): string
     {
         $monthsMode = strtolower(trim($monthsMode));
-        return in_array($monthsMode, ['all', 'current'], true) ? $monthsMode : 'all';
+        return in_array($monthsMode, ['all', 'current'], true) ? $monthsMode : CalGoogleConfig::DEFAULT_MONTHS;
     }
 
     private function normalize_language(string $lang): string
     {
         $lang = strtolower(trim($lang));
-        return in_array($lang, ['es', 'en'], true) ? $lang : 'es';
+        return in_array($lang, ['es', 'en'], true) ? $lang : CalGoogleConfig::DEFAULT_LANG;
     }
 
     private function normalize_view_mode(string $view): string
     {
         $view = strtolower(trim($view));
-        return in_array($view, ['accordion', 'list'], true) ? $view : 'accordion';
+        return in_array($view, ['accordion', 'list'], true) ? $view : CalGoogleConfig::DEFAULT_VIEW;
     }
 
     private function normalize_boolean_attribute(string $value, bool $default): bool
@@ -748,7 +788,7 @@ final class Cal_Google_Shortcode_Plugin
             return '';
         }
 
-        set_transient(self::EVENT_TRANSIENT_PREFIX . $eventId, $payload, HOUR_IN_SECONDS);
+        set_transient(self::EVENT_TRANSIENT_PREFIX . $eventId, $payload, CalGoogleConfig::CACHE_TTL_SECONDS);
 
         return add_query_arg(self::ICS_QUERY_VAR, $eventId, home_url('/'));
     }
