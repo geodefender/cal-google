@@ -13,7 +13,7 @@ if (! defined('ABSPATH')) {
 interface CalGoogleIcsFetcherInterface
 {
     /**
-     * @return array<int,array<string,mixed>>|WP_Error
+     * @return array<int,Event>|WP_Error
      */
     public function get_events_from_source(string $source);
 }
@@ -21,7 +21,7 @@ interface CalGoogleIcsFetcherInterface
 interface CalGoogleIcsParserInterface
 {
     /**
-     * @return array<int,array<string,mixed>>
+     * @return array<int,Event>
      */
     public function parse_ics_events(string $ics): array;
 
@@ -39,14 +39,63 @@ interface CalGoogleIcsParserInterface
 interface CalGoogleCalendarRendererInterface
 {
     /**
-     * @param array<int,array<string,mixed>> $events
+     * @param array<int,Event> $events
      */
     public function render_year_accordion(array $events, string $monthsMode, string $lang, string $bgColor, string $borderColor, string $textColor): string;
 
     /**
-     * @param array<int,array<string,mixed>> $events
+     * @param array<int,Event> $events
      */
     public function render_event_list(array $events, string $monthsMode, string $lang, bool $groupByMonth, string $bgColor, string $borderColor, string $textColor): string;
+}
+
+final class Event
+{
+    /** @var array<int,DateTimeImmutable> */
+    public array $exdate;
+
+    /** @var array<int,DateTimeImmutable> */
+    public array $rdate;
+
+    public function __construct(
+        public string $summary,
+        public string $description,
+        public string $location,
+        public string $url,
+        public DateTimeImmutable $start,
+        public ?DateTimeImmutable $end = null,
+        public string $uid = '',
+        public string $rrule = '',
+        array $exdate = [],
+        array $rdate = []
+    ) {
+        $this->exdate = $exdate;
+        $this->rdate = $rdate;
+    }
+
+    public function isAllDay(): bool
+    {
+        if ($this->start->format('His') !== '000000') {
+            return false;
+        }
+
+        return $this->end === null || $this->end->format('His') === '000000';
+    }
+
+    public function month(): int
+    {
+        return (int) $this->start->format('n');
+    }
+
+    public function year(): int
+    {
+        return (int) $this->start->format('Y');
+    }
+
+    public function withStartAndEnd(DateTimeImmutable $start, ?DateTimeImmutable $end): self
+    {
+        return new self($this->summary, $this->description, $this->location, $this->url, $start, $end, $this->uid, $this->rrule, $this->exdate, $this->rdate);
+    }
 }
 
 final class IcsParser implements CalGoogleIcsParserInterface
@@ -79,18 +128,18 @@ final class IcsParser implements CalGoogleIcsParserInterface
                 $start = $this->parse_ics_date($current['DTSTART'] ?? null);
                 if ($start instanceof DateTimeImmutable) {
                     $end = $this->parse_ics_date($current['DTEND'] ?? null);
-                    $events[] = [
-                        'summary' => $current['SUMMARY'] ?? __('(Sin título)', 'cal-google'),
-                        'description' => $current['DESCRIPTION'] ?? '',
-                        'location' => $current['LOCATION'] ?? '',
-                        'url' => $current['URL'] ?? '',
-                        'uid' => $current['UID'] ?? '',
-                        'rrule' => $current['RRULE'] ?? '',
-                        'exdate' => $this->parse_ics_date_list($current['EXDATE'] ?? []),
-                        'rdate' => $this->parse_ics_date_list($current['RDATE'] ?? []),
-                        'start' => $start,
-                        'end' => $end,
-                    ];
+                    $events[] = new Event(
+                        (string) ($current['SUMMARY'] ?? __('(Sin título)', 'cal-google')),
+                        (string) ($current['DESCRIPTION'] ?? ''),
+                        (string) ($current['LOCATION'] ?? ''),
+                        (string) ($current['URL'] ?? ''),
+                        $start,
+                        $end,
+                        (string) ($current['UID'] ?? ''),
+                        (string) ($current['RRULE'] ?? ''),
+                        $this->parse_ics_date_list($current['EXDATE'] ?? []),
+                        $this->parse_ics_date_list($current['RDATE'] ?? [])
+                    );
                 }
 
                 $current = [];
@@ -120,8 +169,8 @@ final class IcsParser implements CalGoogleIcsParserInterface
             $current[$key] = $decodedValue;
         }
 
-        usort($events, static function (array $a, array $b): int {
-            return $a['start'] <=> $b['start'];
+        usort($events, static function (Event $a, Event $b): int {
+            return $a->start <=> $b->start;
         });
 
         return $events;
@@ -248,11 +297,11 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
 
         foreach ($events as $event) {
             /** @var DateTimeImmutable $start */
-            $start = $event['start'];
-            if ((int) $start->format('Y') !== $year) {
+            $start = $event->start;
+            if ($event->year() !== $year) {
                 continue;
             }
-            $byMonth[(int) $start->format('n')][] = $event;
+            $byMonth[$event->month()][] = $event;
         }
 
         $monthsToShow = $monthsMode === 'current' ? range($currentMonth, 12) : range(1, 12);
@@ -302,8 +351,8 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
         $byMonth = [];
         foreach ($events as $event) {
             /** @var DateTimeImmutable $start */
-            $start = $event['start'];
-            $month = (int) $start->format('n');
+            $start = $event->start;
+            $month = $event->month();
             if (! isset($byMonth[$month])) {
                 $byMonth[$month] = [];
             }
@@ -356,27 +405,22 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
         return (string) ob_get_clean();
     }
 
-    private function render_event_item(array $event, string $lang, array $translations): void
+    private function render_event_item(Event $event, string $lang, array $translations): void
     {
-        $start = $event['start'];
-        $end = $event['end'];
-        $when = $this->format_event_datetime($start, $lang);
-        if ($end instanceof DateTimeImmutable) {
-            $when .= ' - ' . $this->format_event_datetime($end, $lang);
-        }
+        $when = $this->format_event_when($event, $lang);
 
-        $eventUrl = esc_url((string) ($event['url'] ?? ''));
+        $eventUrl = esc_url($event->url);
         $googleTemplateUrl = esc_url(call_user_func($this->googleTemplateUrlBuilder, $event));
         $icsDownloadUrl = esc_url(call_user_func($this->icsDownloadUrlBuilder, $event));
         ?>
         <article class="cal-google-event">
-            <div class="cal-google-event-title"><?php echo esc_html((string) $event['summary']); ?></div>
+            <div class="cal-google-event-title"><?php echo esc_html($event->summary); ?></div>
             <div class="cal-google-event-meta"><?php echo esc_html($when); ?></div>
-            <?php if (! empty($event['location'])) : ?>
-                <div class="cal-google-event-meta"><?php echo esc_html($translations['location']) . esc_html((string) $event['location']); ?></div>
+            <?php if ($event->location !== '') : ?>
+                <div class="cal-google-event-meta"><?php echo esc_html($translations['location']) . esc_html($event->location); ?></div>
             <?php endif; ?>
-            <?php if (! empty($event['description'])) : ?>
-                <div class="cal-google-event-description"><?php echo esc_html((string) $event['description']); ?></div>
+            <?php if ($event->description !== '') : ?>
+                <div class="cal-google-event-description"><?php echo esc_html($event->description); ?></div>
             <?php endif; ?>
             <?php if ($eventUrl !== '') : ?>
                 <div class="cal-google-event-description"><a href="<?php echo $eventUrl; ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($translations['event_link']); ?></a></div>
@@ -407,6 +451,22 @@ final class CalendarRenderer implements CalGoogleCalendarRendererInterface
         }
 
         return [1 => 'Enero', 2 => 'Febrero', 3 => 'Marzo', 4 => 'Abril', 5 => 'Mayo', 6 => 'Junio', 7 => 'Julio', 8 => 'Agosto', 9 => 'Septiembre', 10 => 'Octubre', 11 => 'Noviembre', 12 => 'Diciembre'];
+    }
+
+    private function format_event_when(Event $event, string $lang): string
+    {
+        if ($event->isAllDay()) {
+            return $lang === 'en'
+                ? wp_date('m/d/Y', $event->start->getTimestamp())
+                : wp_date('d/m/Y', $event->start->getTimestamp());
+        }
+
+        $when = $this->format_event_datetime($event->start, $lang);
+        if ($event->end instanceof DateTimeImmutable) {
+            $when .= ' - ' . $this->format_event_datetime($event->end, $lang);
+        }
+
+        return $when;
     }
 
     private function format_event_datetime(DateTimeImmutable $dateTime, string $lang): string
@@ -575,7 +635,7 @@ final class Cal_Google_Shortcode_Plugin
     }
 
     /**
-     * @return array<int,array<string,mixed>>|WP_Error
+     * @return array<int,Event>|WP_Error
      */
     private function get_events_from_source(string $source)
     {
@@ -583,7 +643,7 @@ final class Cal_Google_Shortcode_Plugin
     }
 
     /**
-     * @return array<int,array<string,mixed>>
+     * @return array<int,Event>
      */
     private function parse_ics_events(string $ics): array
     {
@@ -610,7 +670,7 @@ final class Cal_Google_Shortcode_Plugin
     }
 
     /**
-     * @param array<int,array<string,mixed>> $events
+     * @param array<int,Event> $events
      */
     private function render_year_accordion(array $events, string $monthsMode, string $lang, string $bgColor, string $borderColor, string $textColor): string
     {
@@ -618,7 +678,7 @@ final class Cal_Google_Shortcode_Plugin
     }
 
     /**
-     * @param array<int,array<string,mixed>> $events
+     * @param array<int,Event> $events
      */
     private function render_event_list(array $events, string $monthsMode, string $lang, bool $groupByMonth, string $bgColor, string $borderColor, string $textColor): string
     {
@@ -626,31 +686,23 @@ final class Cal_Google_Shortcode_Plugin
     }
 
     /**
-     * @param array<string,mixed> $event
-     * @param array<string,string> $translations
+         * @param array<string,string> $translations
      */
-    private function render_event_item(array $event, string $lang, array $translations): void
+    private function render_event_item(Event $event, string $lang, array $translations): void
     {
-        /** @var DateTimeImmutable $start */
-        $start = $event['start'];
-        /** @var DateTimeImmutable|null $end */
-        $end = $event['end'];
-        $when = $this->format_event_datetime($start, $lang);
-        if ($end instanceof DateTimeImmutable) {
-            $when .= ' - ' . $this->format_event_datetime($end, $lang);
-        }
-        $eventUrl = esc_url((string) ($event['url'] ?? ''));
+        $when = $this->format_event_when($event, $lang);
+        $eventUrl = esc_url($event->url);
         $googleTemplateUrl = esc_url($this->build_google_calendar_template_url($event));
         $icsDownloadUrl = esc_url($this->build_event_ics_download_url($event));
         ?>
         <article class="cal-google-event">
-            <div class="cal-google-event-title"><?php echo esc_html((string) $event['summary']); ?></div>
+            <div class="cal-google-event-title"><?php echo esc_html($event->summary); ?></div>
             <div class="cal-google-event-meta"><?php echo esc_html($when); ?></div>
-            <?php if (! empty($event['location'])) : ?>
-                <div class="cal-google-event-meta"><?php echo esc_html($translations['location']) . esc_html((string) $event['location']); ?></div>
+            <?php if ($event->location !== '') : ?>
+                <div class="cal-google-event-meta"><?php echo esc_html($translations['location']) . esc_html($event->location); ?></div>
             <?php endif; ?>
-            <?php if (! empty($event['description'])) : ?>
-                <div class="cal-google-event-description"><?php echo esc_html((string) $event['description']); ?></div>
+            <?php if ($event->description !== '') : ?>
+                <div class="cal-google-event-description"><?php echo esc_html($event->description); ?></div>
             <?php endif; ?>
             <?php if ($eventUrl !== '') : ?>
                 <div class="cal-google-event-description"><a href="<?php echo $eventUrl; ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($translations['event_link']); ?></a></div>
@@ -665,37 +717,26 @@ final class Cal_Google_Shortcode_Plugin
         <?php
     }
 
-    /**
-     * @param array<string,mixed> $event
-     */
-    private function build_google_calendar_template_url(array $event): string
+    private function build_google_calendar_template_url(Event $event): string
     {
-        if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
-            return '';
-        }
-
-        /** @var DateTimeImmutable $start */
-        $start = $event['start'];
-        $end = $event['end'] ?? null;
+        $start = $event->start;
+        $end = $event->end;
         if (! ($end instanceof DateTimeImmutable) || $end <= $start) {
             $end = $start->modify('+1 hour');
         }
 
         $params = [
             'action' => 'TEMPLATE',
-            'text' => (string) ($event['summary'] ?? ''),
+            'text' => $event->summary,
             'dates' => $start->setTimezone(new DateTimeZone('UTC'))->format('Ymd\THis\Z') . '/' . $end->setTimezone(new DateTimeZone('UTC'))->format('Ymd\THis\Z'),
-            'location' => (string) ($event['location'] ?? ''),
-            'details' => (string) ($event['description'] ?? ''),
+            'location' => $event->location,
+            'details' => $event->description,
         ];
 
         return 'https://calendar.google.com/calendar/render?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
     }
 
-    /**
-     * @param array<string,mixed> $event
-     */
-    private function build_event_ics_download_url(array $event): string
+    private function build_event_ics_download_url(Event $event): string
     {
         $eventId = $this->build_event_identifier($event);
         if ($eventId === '') {
@@ -712,49 +753,32 @@ final class Cal_Google_Shortcode_Plugin
         return add_query_arg(self::ICS_QUERY_VAR, $eventId, home_url('/'));
     }
 
-    /**
-     * @param array<string,mixed> $event
-     */
-    private function build_event_identifier(array $event): string
+    private function build_event_identifier(Event $event): string
     {
-        if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
-            return '';
-        }
+        $start = $event->start;
+        $uid = $event->uid;
 
-        /** @var DateTimeImmutable $start */
-        $start = $event['start'];
-        $uid = is_string($event['uid'] ?? null) ? $event['uid'] : '';
-
-        return sha1($uid . '|' . $start->format('c') . '|' . (string) ($event['summary'] ?? ''));
+        return sha1($uid . '|' . $start->format('c') . '|' . $event->summary);
     }
 
-    /**
-     * @param array<string,mixed> $event
-     * @return array<string,mixed>
-     */
-    private function build_event_download_payload(array $event): array
+    /** @return array<string,mixed> */
+    private function build_event_download_payload(Event $event): array
     {
-        if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
-            return [];
-        }
-
-        /** @var DateTimeImmutable $start */
-        $start = $event['start'];
-        $end = $event['end'] ?? null;
+        $start = $event->start;
+        $end = $event->end;
 
         return [
-            'uid' => is_string($event['uid'] ?? null) ? $event['uid'] : '',
-            'summary' => (string) ($event['summary'] ?? ''),
-            'description' => (string) ($event['description'] ?? ''),
-            'location' => (string) ($event['location'] ?? ''),
+            'uid' => $event->uid,
+            'summary' => $event->summary,
+            'description' => $event->description,
+            'location' => $event->location,
             'start_ts' => $start->getTimestamp(),
             'end_ts' => $end instanceof DateTimeImmutable ? $end->getTimestamp() : null,
         ];
     }
 
     /**
-     * @param array<string,mixed> $event
-     */
+         */
     private function build_single_event_ics(array $event): string
     {
         if (! is_numeric($event['start_ts'] ?? null)) {
@@ -805,9 +829,8 @@ final class Cal_Google_Shortcode_Plugin
         );
     }
 
-    /**
-     * @param array<int,array<string,mixed>> $events
-     * @return array<int,array<string,mixed>>
+    /** @param array<int,Event> $events
+     *  @return array<int,Event>
      */
     private function filter_events_by_months_mode(array $events, string $monthsMode, int $currentMonth): array
     {
@@ -815,20 +838,15 @@ final class Cal_Google_Shortcode_Plugin
             return $events;
         }
 
-        $filtered = array_filter($events, static function (array $event) use ($currentMonth): bool {
-            if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
-                return false;
-            }
-
-            return (int) $event['start']->format('n') >= $currentMonth;
+        $filtered = array_filter($events, static function (Event $event) use ($currentMonth): bool {
+            return $event->month() >= $currentMonth;
         });
 
         return array_values($filtered);
     }
 
-    /**
-     * @param array<int,array<string,mixed>> $events
-     * @return array<int,array<string,mixed>>
+    /** @param array<int,Event> $events
+     *  @return array<int,Event>
      */
     private function expand_events_for_year(array $events, int $year): array
     {
@@ -839,35 +857,29 @@ final class Cal_Google_Shortcode_Plugin
 
         foreach ($events as $event) {
             $duration = null;
-            if (($event['end'] ?? null) instanceof DateTimeImmutable && ($event['start'] ?? null) instanceof DateTimeImmutable) {
-                $duration = $event['end']->getTimestamp() - $event['start']->getTimestamp();
+            if ($event->end instanceof DateTimeImmutable) {
+                $duration = $event->end->getTimestamp() - $event->start->getTimestamp();
             }
 
-            $isRecurring = ! empty($event['rrule']) && is_string($event['rrule']);
+            $isRecurring = $event->rrule !== '';
             if (! $isRecurring) {
-                if (($event['start'] ?? null) instanceof DateTimeImmutable && (int) $event['start']->format('Y') === $year) {
+                if ($event->year() === $year) {
                     $expanded[] = $event;
                 }
                 continue;
             }
 
-            $rrule = $this->parse_rrule((string) $event['rrule']);
+            $rrule = $this->parse_rrule($event->rrule);
             $occurrences = $this->build_recurrence_occurrences($event, $rrule, $yearStart, $yearEnd);
 
             foreach ($occurrences as $occurrenceStart) {
-                $copy = $event;
-                $copy['start'] = $occurrenceStart;
-                $copy['end'] = is_int($duration) ? $occurrenceStart->modify(($duration >= 0 ? '+' : '') . $duration . ' seconds') : null;
-                $expanded[] = $copy;
+                $end = is_int($duration) ? $occurrenceStart->modify(($duration >= 0 ? '+' : '') . $duration . ' seconds') : null;
+                $expanded[] = $event->withStartAndEnd($occurrenceStart, $end);
             }
         }
 
-        usort($expanded, static function (array $a, array $b): int {
-            /** @var DateTimeImmutable $startA */
-            $startA = $a['start'];
-            /** @var DateTimeImmutable $startB */
-            $startB = $b['start'];
-            return $startA <=> $startB;
+        usort($expanded, static function (Event $a, Event $b): int {
+            return $a->start <=> $b->start;
         });
 
         return $expanded;
@@ -893,16 +905,11 @@ final class Cal_Google_Shortcode_Plugin
     }
 
     /**
-     * @param array<string,mixed> $event
      * @param array<string,string> $rrule
      * @return array<int,DateTimeImmutable>
      */
-    private function build_recurrence_occurrences(array $event, array $rrule, DateTimeImmutable $yearStart, DateTimeImmutable $yearEnd): array
+    private function build_recurrence_occurrences(Event $event, array $rrule, DateTimeImmutable $yearStart, DateTimeImmutable $yearEnd): array
     {
-        if (! (($event['start'] ?? null) instanceof DateTimeImmutable)) {
-            return [];
-        }
-
         $freq = $rrule['FREQ'] ?? '';
         if (! in_array($freq, ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'], true)) {
             return [];
@@ -914,7 +921,7 @@ final class Cal_Google_Shortcode_Plugin
         $until = $this->parser->parse_ics_date($rrule['UNTIL'] ?? null);
 
         $exdateMap = [];
-        foreach (($event['exdate'] ?? []) as $exdate) {
+        foreach ($event->exdate as $exdate) {
             if ($exdate instanceof DateTimeImmutable) {
                 $exdateMap[$exdate->format('Ymd\THis')] = true;
             }
@@ -922,7 +929,7 @@ final class Cal_Google_Shortcode_Plugin
 
         $occurrences = [];
         $occurrenceMap = [];
-        $current = $event['start'];
+        $current = $event->start;
         $generated = 0;
 
         while ($generated < $hardLimit) {
@@ -950,7 +957,7 @@ final class Cal_Google_Shortcode_Plugin
             $current = $next;
         }
 
-        foreach (($event['rdate'] ?? []) as $rdate) {
+        foreach ($event->rdate as $rdate) {
             if (! ($rdate instanceof DateTimeImmutable)) {
                 continue;
             }
@@ -1052,6 +1059,22 @@ final class Cal_Google_Shortcode_Plugin
             11 => 'Noviembre',
             12 => 'Diciembre',
         ];
+    }
+
+    private function format_event_when(Event $event, string $lang): string
+    {
+        if ($event->isAllDay()) {
+            return $lang === 'en'
+                ? wp_date('m/d/Y', $event->start->getTimestamp())
+                : wp_date('d/m/Y', $event->start->getTimestamp());
+        }
+
+        $when = $this->format_event_datetime($event->start, $lang);
+        if ($event->end instanceof DateTimeImmutable) {
+            $when .= ' - ' . $this->format_event_datetime($event->end, $lang);
+        }
+
+        return $when;
     }
 
     private function format_event_datetime(DateTimeImmutable $dateTime, string $lang): string
