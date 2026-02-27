@@ -5,7 +5,7 @@
 >
     <?php foreach ($monthsToShow as $month) : ?>
         <details class="cal-google-month" <?php echo $month === $currentMonth ? 'open' : ''; ?>>
-            <summary><?php echo esc_html($monthNames[$month] . ' ' . $year); ?><?php if ($showMonthCounter) : ?><span class="cal-google-month-counter"> (<?php echo esc_html((string) count($byMonth[$month])); ?>)</span><?php endif; ?></summary>
+            <summary style="background-color: <?php echo esc_attr($bgColor); ?>; color: <?php echo esc_attr($textColor); ?>;"><?php echo esc_html($monthNames[$month] . ' ' . $year); ?><?php if ($showMonthCounter) : ?><span class="cal-google-month-counter"> (<?php echo esc_html((string) count($byMonth[$month])); ?>)</span><?php endif; ?></summary>
             <div class="cal-google-month-content">
                 <?php if (empty($byMonth[$month])) : ?>
                     <p class="cal-google-empty"><?php echo esc_html($translations['no_events']); ?></p>
