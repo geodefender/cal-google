@@ -312,6 +312,8 @@ final class IcsParser implements CalGoogleIcsParserInterface
 
 final class IcsFetcher implements CalGoogleIcsFetcherInterface
 {
+    private const EVENTS_CACHE_SCHEMA_VERSION = 1;
+
     public function __construct(private CalGoogleIcsParserInterface $parser)
     {
     }
@@ -325,8 +327,13 @@ final class IcsFetcher implements CalGoogleIcsFetcherInterface
 
         $cache_key = 'cal_google_' . md5($source . '|' . ($rangeStart?->format('c') ?? 'null') . '|' . ($rangeEnd?->format('c') ?? 'null'));
         $cached = get_transient($cache_key);
-        if (is_array($cached)) {
-            return $cached;
+        $cachedEvents = $this->events_from_cache_payload($cached);
+        if (is_array($cachedEvents)) {
+            return $cachedEvents;
+        }
+
+        if ($cached !== false) {
+            delete_transient($cache_key);
         }
 
         $response = wp_remote_get($source, [
@@ -349,7 +356,7 @@ final class IcsFetcher implements CalGoogleIcsFetcherInterface
             return new WP_Error(CalGoogleErrorCodes::EMPTY_RESPONSE, CalGoogleErrorCodes::EMPTY_RESPONSE, ['status' => $status]);
         }
 
-        $events = $this->parser->parse_ics_events($body, $rangeStart, $rangeEnd);
+        $events = $this->sanitize_events($this->parser->parse_ics_events($body, $rangeStart, $rangeEnd));
 
         if (defined('WP_DEBUG') && WP_DEBUG === true && ($rangeStart instanceof DateTimeImmutable || $rangeEnd instanceof DateTimeImmutable)) {
             $allEventsCount = count($this->parser->parse_ics_events($body));
@@ -362,9 +369,165 @@ final class IcsFetcher implements CalGoogleIcsFetcherInterface
             ));
         }
 
-        set_transient($cache_key, $events, CalGoogleConfig::CACHE_TTL_SECONDS);
+        set_transient($cache_key, $this->build_events_cache_payload($events), CalGoogleConfig::CACHE_TTL_SECONDS);
 
         return $events;
+    }
+
+    /** @param mixed $cached */
+    private function events_from_cache_payload($cached): ?array
+    {
+        if (! is_array($cached)) {
+            return null;
+        }
+
+        if (($cached['schema_version'] ?? null) !== self::EVENTS_CACHE_SCHEMA_VERSION) {
+            return null;
+        }
+
+        if (! is_numeric($cached['validated_at'] ?? null) || ! is_array($cached['events'] ?? null)) {
+            return null;
+        }
+
+        $events = [];
+        foreach ($cached['events'] as $eventRow) {
+            $event = $this->build_event_from_cache_row($eventRow);
+            if (! ($event instanceof Event)) {
+                return null;
+            }
+
+            $events[] = $event;
+        }
+
+        return $events;
+    }
+
+    /** @param array<int,Event> $events
+     *  @return array{schema_version:int,validated_at:int,events:array<int,array<string,mixed>>}
+     */
+    private function build_events_cache_payload(array $events): array
+    {
+        $rows = [];
+        foreach ($events as $event) {
+            $rows[] = [
+                'summary' => $event->summary,
+                'description' => $event->description,
+                'location' => $event->location,
+                'url' => $event->url,
+                'uid' => $event->uid,
+                'rrule' => $event->rrule,
+                'start_ts' => $event->start->getTimestamp(),
+                'end_ts' => $event->end instanceof DateTimeImmutable ? $event->end->getTimestamp() : null,
+                'exdate_ts' => array_map(static fn (DateTimeImmutable $date): int => $date->getTimestamp(), $event->exdate),
+                'rdate_ts' => array_map(static fn (DateTimeImmutable $date): int => $date->getTimestamp(), $event->rdate),
+            ];
+        }
+
+        return [
+            'schema_version' => self::EVENTS_CACHE_SCHEMA_VERSION,
+            'validated_at' => time(),
+            'events' => $rows,
+        ];
+    }
+
+    /** @return array<int,Event> */
+    private function sanitize_events(array $events): array
+    {
+        $sanitizedEvents = [];
+        foreach ($events as $event) {
+            if (! ($event instanceof Event)) {
+                continue;
+            }
+
+            $sanitizedEvents[] = new Event(
+                sanitize_text_field($event->summary),
+                sanitize_textarea_field($event->description),
+                sanitize_text_field($event->location),
+                esc_url_raw($event->url),
+                $event->start,
+                $event->end,
+                sanitize_text_field($event->uid),
+                sanitize_text_field($event->rrule),
+                $this->sanitize_event_dates($event->exdate),
+                $this->sanitize_event_dates($event->rdate)
+            );
+        }
+
+        return $sanitizedEvents;
+    }
+
+    /** @param mixed $eventRow */
+    private function build_event_from_cache_row($eventRow): ?Event
+    {
+        if (! is_array($eventRow) || ! is_numeric($eventRow['start_ts'] ?? null)) {
+            return null;
+        }
+
+        $timezone = wp_timezone();
+        $start = (new DateTimeImmutable('@' . (int) $eventRow['start_ts']))->setTimezone($timezone);
+        $end = null;
+        if (($eventRow['end_ts'] ?? null) !== null) {
+            if (! is_numeric($eventRow['end_ts'])) {
+                return null;
+            }
+            $end = (new DateTimeImmutable('@' . (int) $eventRow['end_ts']))->setTimezone($timezone);
+        }
+
+        $exdate = $this->build_dates_from_timestamps($eventRow['exdate_ts'] ?? []);
+        if ($exdate === null) {
+            return null;
+        }
+
+        $rdate = $this->build_dates_from_timestamps($eventRow['rdate_ts'] ?? []);
+        if ($rdate === null) {
+            return null;
+        }
+
+        return $this->sanitize_events([
+            new Event(
+                (string) ($eventRow['summary'] ?? ''),
+                (string) ($eventRow['description'] ?? ''),
+                (string) ($eventRow['location'] ?? ''),
+                (string) ($eventRow['url'] ?? ''),
+                $start,
+                $end,
+                (string) ($eventRow['uid'] ?? ''),
+                (string) ($eventRow['rrule'] ?? ''),
+                $exdate,
+                $rdate
+            ),
+        ])[0] ?? null;
+    }
+
+    /** @param mixed $timestamps
+     * @return array<int,DateTimeImmutable>|null
+     */
+    private function build_dates_from_timestamps($timestamps): ?array
+    {
+        if (! is_array($timestamps)) {
+            return null;
+        }
+
+        $timezone = wp_timezone();
+        $dates = [];
+        foreach ($timestamps as $timestamp) {
+            if (! is_numeric($timestamp)) {
+                return null;
+            }
+
+            $dates[] = (new DateTimeImmutable('@' . (int) $timestamp))->setTimezone($timezone);
+        }
+
+        return $dates;
+    }
+
+    /**
+     * @param array<int,mixed> $dates
+     * @return array<int,DateTimeImmutable>
+     */
+    private function sanitize_event_dates(array $dates): array
+    {
+        return array_values(array_filter($dates, static fn ($date): bool => $date instanceof DateTimeImmutable));
     }
 
     private function validate_source_url_policy(string $source): ?WP_Error
