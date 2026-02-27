@@ -5,7 +5,7 @@
         <div class="cal-google-event-meta"><?php echo esc_html($event['location_label']) . esc_html($event['location']); ?></div>
     <?php endif; ?>
     <?php if ($event['description'] !== '') : ?>
-        <div class="cal-google-event-description"><?php echo esc_html($event['description']); ?></div>
+        <div class="cal-google-event-description"><?php echo wp_kses_post($event['description']); ?></div>
     <?php endif; ?>
     <?php if ($event['event_url'] !== '') : ?>
         <div class="cal-google-event-description"><a href="<?php echo esc_url($event['event_url']); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($event['event_link_label']); ?></a></div>
