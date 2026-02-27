@@ -93,11 +93,15 @@ final class Cal_Google_Shortcode_Plugin
 
     private function enqueue_assets(): void
     {
+        $cssPath = dirname(__DIR__) . '/assets/cal-google.css';
+        $pluginMainFile = dirname(__DIR__) . '/cal-google-shortcode.php';
+        $version = file_exists($cssPath) ? filemtime($cssPath) : false;
+
         wp_enqueue_style(
             self::STYLE_HANDLE,
-            plugins_url('assets/cal-google.css', __FILE__),
+            plugins_url('assets/cal-google.css', $pluginMainFile),
             [],
-            (string) filemtime(__DIR__ . '/assets/cal-google.css')
+            $version !== false ? (string) $version : '1.0.0'
         );
     }
 
